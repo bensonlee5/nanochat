@@ -58,15 +58,18 @@ parser.add_argument("--target-param-data-ratio", type=float, default=10.5, help=
 # Optimization
 parser.add_argument("--device-batch-size", type=int, default=32, help="per-device batch size. good number to reduce to 16,8,4,... if you OOM on VRAM.")
 parser.add_argument("--total-batch-size", type=int, default=-1, help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)")
+parser.add_argument("--batch-multiplier", type=float, default=1.0, help="multiplier applied to predicted auto batch size for narrow local sweeps")
 parser.add_argument("--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)")
 parser.add_argument("--unembedding-lr", type=float, default=0.004, help="learning rate for unembedding parameters (Adam)")
 parser.add_argument("--weight-decay", type=float, default=0.2, help="cautious weight decay for the Muon optimizer (for weights)")
+parser.add_argument("--wd-multiplier", type=float, default=1.0, help="multiplier applied to transfer-scaled weight decay for narrow local sweeps")
 parser.add_argument("--matrix-lr", type=float, default=0.02, help="learning rate for matrix parameters (Muon)")
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
 parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
 parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
+parser.add_argument("--warmdown-shape", type=str, default="linear", choices=["linear", "cosine"], help="shape of LR warmdown schedule")
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 parser.add_argument("--resume-from-step", type=int, default=-1, help="resume training from this step (-1 = disable)")
 # Evaluation
@@ -74,11 +77,23 @@ parser.add_argument("--eval-every", type=int, default=250, help="evaluate val bp
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
 parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluate CORE metric every N steps (-1 = disable)")
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
+parser.add_argument("--time-to-target-metric", type=str, default="val_bpb", choices=["val_bpb", "core"], help="metric used for time-to-target tracking")
+parser.add_argument("--time-to-target-threshold", type=float, default=-1.0, help="target threshold for selected metric (-1 disables tracking)")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
+if args.batch_multiplier <= 0:
+    raise ValueError(f"--batch-multiplier must be > 0, got {args.batch_multiplier}")
+if args.wd_multiplier <= 0:
+    raise ValueError(f"--wd-multiplier must be > 0, got {args.wd_multiplier}")
+if not 0 <= args.warmup_ratio <= 1:
+    raise ValueError(f"--warmup-ratio must be in [0, 1], got {args.warmup_ratio}")
+if not 0 <= args.warmdown_ratio <= 1:
+    raise ValueError(f"--warmdown-ratio must be in [0, 1], got {args.warmdown_ratio}")
+if not 0 <= args.final_lr_frac <= 1:
+    raise ValueError(f"--final-lr-frac must be in [0, 1], got {args.final_lr_frac}")
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
@@ -273,8 +288,13 @@ total_batch_size = args.total_batch_size # user-provided override is possible
 if total_batch_size == -1:
     batch_size_ratio = target_tokens / D_REF
     predicted_batch_size = B_REF * batch_size_ratio ** 0.383
+    if args.batch_multiplier != 1.0:
+        predicted_batch_size *= args.batch_multiplier
+        print0(f"Applying batch multiplier {args.batch_multiplier:.3f} to predicted Bopt")
     total_batch_size = 2 ** round(math.log2(predicted_batch_size)) # clamp to nearest power of 2 for efficiency
     print0(f"Auto-computed optimal batch size: {total_batch_size:,} tokens")
+elif args.batch_multiplier != 1.0:
+    print0(f"Ignoring --batch-multiplier={args.batch_multiplier:.3f} because --total-batch-size is explicitly set to {total_batch_size:,}")
 
 # 3) Knowing the batch size, we can now calculate a learning rate correction (bigger batch size allows higher learning rates)
 batch_lr_scale = 1.0
@@ -292,7 +312,9 @@ if batch_ratio != 1.0:
 # Above, we used learning rate scaling η ∝ √(B/B_ref). So it's a matter of ~10 lines of math to derive that to keep T_epoch constant, we need:
 # λ = λ_ref · √(B/B_ref) · (D_ref/D)
 # Note that these papers study AdamW, *not* Muon. We are blindly following AdamW theory for scaling hoping it ~works for Muon too.
-weight_decay_scaled = args.weight_decay * math.sqrt(total_batch_size / B_REF) * (D_REF / target_tokens)
+weight_decay_scaled = args.weight_decay * math.sqrt(total_batch_size / B_REF) * (D_REF / target_tokens) * args.wd_multiplier
+if args.wd_multiplier != 1.0:
+    print0(f"Applying WD multiplier {args.wd_multiplier:.3f}")
 if weight_decay_scaled != args.weight_decay:
     print0(f"Scaling weight decay from {args.weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {args.depth}")
 
@@ -348,13 +370,20 @@ print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
 def get_lr_multiplier(it):
     warmup_iters = round(args.warmup_ratio * num_iterations)
     warmdown_iters = round(args.warmdown_ratio * num_iterations)
-    if it < warmup_iters:
+    if warmup_iters > 0 and it < warmup_iters:
         return (it + 1) / warmup_iters
-    elif it <= num_iterations - warmdown_iters:
+    if warmdown_iters <= 0 or it <= num_iterations - warmdown_iters:
         return 1.0
+
+    progress = (num_iterations - it) / warmdown_iters
+    if args.warmdown_shape == "linear":
+        decay_multiplier = progress
+    elif args.warmdown_shape == "cosine":
+        decay_progress = 1.0 - progress
+        decay_multiplier = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
     else:
-        progress = (num_iterations - it) / warmdown_iters
-        return progress * 1.0 + (1 - progress) * args.final_lr_frac
+        raise ValueError(f"Unknown warmdown shape: {args.warmdown_shape}")
+    return decay_multiplier * 1.0 + (1.0 - decay_multiplier) * args.final_lr_frac
 
 # Momentum scheduler for Muon optimizer (warms up to 0.95 over the first 300 steps)
 def get_muon_momentum(it):
@@ -376,6 +405,9 @@ if not resuming:
     min_val_bpb = float("inf")
     smooth_train_loss = 0 # EMA of training loss
     total_training_time = 0 # total wall-clock time of training
+    time_to_target_sec = None
+    time_to_target_sec_extrapolated = None
+    time_to_target_extrapolation_method = None
 else:
     step = meta_data["step"]
     loop_state = meta_data["loop_state"]
@@ -383,6 +415,45 @@ else:
     min_val_bpb = loop_state["min_val_bpb"]
     smooth_train_loss = loop_state["smooth_train_loss"]
     total_training_time = loop_state["total_training_time"]
+    time_to_target_sec = loop_state.get("time_to_target_sec")
+    time_to_target_sec_extrapolated = loop_state.get("time_to_target_sec_extrapolated")
+    time_to_target_extrapolation_method = loop_state.get("time_to_target_extrapolation_method")
+
+if args.time_to_target_threshold > 0:
+    print0(f"Tracking time-to-target using {args.time_to_target_metric} with threshold {args.time_to_target_threshold}")
+    print0("Time-to-target extrapolation method: linear fit over the most recent eval points")
+
+def extrapolate_time_to_target(eval_points, threshold, metric_name):
+    """Linear extrapolation of target crossing from recent eval points."""
+    if len(eval_points) < 2:
+        return None, "insufficient_points"
+    recent = eval_points[-3:]
+    xs = [p[0] for p in recent]
+    ys = [p[1] for p in recent]
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    denom = sum((x - x_mean) ** 2 for x in xs)
+    if denom <= 0:
+        return None, "degenerate_time_axis"
+    slope = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denom
+    x_last, y_last = xs[-1], ys[-1]
+
+    if metric_name == "val_bpb":
+        if slope >= 0:
+            return None, "non_improving_slope"
+    elif metric_name == "core":
+        if slope <= 0:
+            return None, "non_improving_slope"
+    else:
+        return None, "unknown_metric"
+
+    dt_to_target = (threshold - y_last) / slope
+    t_target = x_last + dt_to_target
+    if t_target < x_last:
+        return None, "target_crossed_in_past"
+    return t_target, "linear_recent_eval"
+
+target_eval_points = []
 
 # Figure out the needed gradient accumulation micro-steps to reach the desired total batch size per step
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -408,6 +479,22 @@ while True:
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
+        if args.time_to_target_threshold > 0 and args.time_to_target_metric == "val_bpb":
+            target_eval_points.append((total_training_time, val_bpb))
+            if time_to_target_sec is None:
+                time_to_target_sec_extrapolated, time_to_target_extrapolation_method = extrapolate_time_to_target(
+                    target_eval_points, args.time_to_target_threshold, args.time_to_target_metric
+                )
+        if (args.time_to_target_threshold > 0 and args.time_to_target_metric == "val_bpb" and
+            time_to_target_sec is None and val_bpb <= args.time_to_target_threshold):
+            time_to_target_sec = total_training_time
+            print0(f"Time-to-target reached via val_bpb at step {step:05d}: {time_to_target_sec/60:.2f}m")
+            wandb_run.log({
+                "step": step,
+                "time_to_target_sec": time_to_target_sec,
+                "time_to_target_metric": "val_bpb",
+                "time_to_target_threshold": args.time_to_target_threshold,
+            })
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
@@ -425,6 +512,22 @@ while True:
         with disable_fp8(orig_model), autocast_ctx:
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+        if args.time_to_target_threshold > 0 and args.time_to_target_metric == "core":
+            target_eval_points.append((total_training_time, results["core_metric"]))
+            if time_to_target_sec is None:
+                time_to_target_sec_extrapolated, time_to_target_extrapolation_method = extrapolate_time_to_target(
+                    target_eval_points, args.time_to_target_threshold, args.time_to_target_metric
+                )
+        if (args.time_to_target_threshold > 0 and args.time_to_target_metric == "core" and
+            time_to_target_sec is None and results["core_metric"] >= args.time_to_target_threshold):
+            time_to_target_sec = total_training_time
+            print0(f"Time-to-target reached via core at step {step:05d}: {time_to_target_sec/60:.2f}m")
+            wandb_run.log({
+                "step": step,
+                "time_to_target_sec": time_to_target_sec,
+                "time_to_target_metric": "core",
+                "time_to_target_threshold": args.time_to_target_threshold,
+            })
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
@@ -464,6 +567,11 @@ while True:
             { # metadata saved as json
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
+                "time_to_target_metric": args.time_to_target_metric,
+                "time_to_target_threshold": args.time_to_target_threshold,
+                "time_to_target_sec": time_to_target_sec,
+                "time_to_target_sec_extrapolated": time_to_target_sec_extrapolated,
+                "time_to_target_extrapolation_method": time_to_target_extrapolation_method,
                 "model_config": model_config_kwargs,
                 "user_config": user_config, # inputs to the training script
                 "device_batch_size": args.device_batch_size,
@@ -474,6 +582,9 @@ while True:
                     "min_val_bpb": min_val_bpb,
                     "smooth_train_loss": smooth_train_loss,
                     "total_training_time": total_training_time,
+                    "time_to_target_sec": time_to_target_sec,
+                    "time_to_target_sec_extrapolated": time_to_target_sec_extrapolated,
+                    "time_to_target_extrapolation_method": time_to_target_extrapolation_method,
                 },
             },
             rank=ddp_rank,
@@ -564,6 +675,19 @@ while True:
 # print a few more stats
 print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
 print0(f"Total training time: {total_training_time/60:.2f}m")
+if time_to_target_sec is not None:
+    print0(f"Time-to-target ({args.time_to_target_metric}): {time_to_target_sec/60:.2f}m")
+elif args.time_to_target_threshold > 0:
+    time_to_target_sec_extrapolated, time_to_target_extrapolation_method = extrapolate_time_to_target(
+        target_eval_points, args.time_to_target_threshold, args.time_to_target_metric
+    )
+    if time_to_target_sec_extrapolated is not None:
+        print0(
+            f"Extrapolated time-to-target ({args.time_to_target_metric}, {time_to_target_extrapolation_method}): "
+            f"{time_to_target_sec_extrapolated/60:.2f}m"
+        )
+    else:
+        print0(f"Extrapolated time-to-target unavailable ({time_to_target_extrapolation_method})")
 if val_bpb is not None:
     print0(f"Minimum validation bpb: {min_val_bpb:.6f}")
 
@@ -580,12 +704,18 @@ get_report().log(section="Base model training", data=[
         "DDP world size": ddp_world_size,
         "warmup_ratio": args.warmup_ratio,
         "warmdown_ratio": args.warmdown_ratio,
+        "warmdown_shape": args.warmdown_shape,
         "final_lr_frac": args.final_lr_frac,
     },
     { # stats about training outcomes
         "Minimum validation bpb": min_val_bpb if val_bpb is not None else None,
         "Final validation bpb": val_bpb,
         "CORE metric estimate": results.get("core_metric", None),
+        "Time to target metric": args.time_to_target_metric,
+        "Time to target threshold": args.time_to_target_threshold if args.time_to_target_threshold > 0 else None,
+        "Time to target (min)": (time_to_target_sec / 60) if time_to_target_sec is not None else None,
+        "Extrapolated time to target (min)": (time_to_target_sec_extrapolated / 60) if time_to_target_sec_extrapolated is not None else None,
+        "Time to target extrapolation method": time_to_target_extrapolation_method,
         "MFU %": f"{mfu:.2f}%",
         "Total training flops": f"{flops_so_far:e}",
         "Total training time": f"{total_training_time/60:.2f}m",
