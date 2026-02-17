@@ -6,10 +6,11 @@ set -u
 # Usage:
 #   bash runs/speedrun_theory.sh
 # Optional env overrides:
-#   SERIES_NAME, RUN_LABEL, WANDB_RUN, NANOCHAT_BASE_DIR
+#   SERIES_NAME, RUN_LABEL, WANDB_RUN, NANOCHAT_BASE_DIR, SEED
 #   DEPTH, HEAD_DIM, MAX_SEQ_LEN, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE
 #   NUM_ITERATIONS, EVAL_EVERY, EVAL_TOKENS, TARGET_PARAM_DATA_RATIO
 #   WARMUP_RATIO, WARMDOWN_RATIO, WARMDOWN_SHAPE, FINAL_LR_FRAC
+#   CORE_METRIC_EVERY, MATRIX_LR, DEVICE_TYPE
 #   TARGET_METRIC, TARGET_THRESHOLD
 
 export OMP_NUM_THREADS=1
@@ -25,20 +26,24 @@ source .venv/bin/activate
 SERIES_NAME="${SERIES_NAME:-theory_$(date +%b%d | tr '[:upper:]' '[:lower:]')}"
 RUN_LABEL="${RUN_LABEL:-baseline_d12}"
 WANDB_RUN="${WANDB_RUN:-dummy}"
+SEED="${SEED:-42}"
 
 DEPTH="${DEPTH:-12}"
 HEAD_DIM="${HEAD_DIM:-128}"
-MAX_SEQ_LEN="${MAX_SEQ_LEN:-512}"
-DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-16}"
-TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE:-16384}"
-NUM_ITERATIONS="${NUM_ITERATIONS:-1500}"
-EVAL_EVERY="${EVAL_EVERY:-100}"
-EVAL_TOKENS="${EVAL_TOKENS:-524288}"
+MAX_SEQ_LEN="${MAX_SEQ_LEN:-2048}"
+DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-32}"
+TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE:--1}"
+NUM_ITERATIONS="${NUM_ITERATIONS:--1}"
+EVAL_EVERY="${EVAL_EVERY:-250}"
+EVAL_TOKENS="${EVAL_TOKENS:-20971520}"
 TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-10.5}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.0}"
 WARMDOWN_RATIO="${WARMDOWN_RATIO:-0.5}"
 WARMDOWN_SHAPE="${WARMDOWN_SHAPE:-linear}"
 FINAL_LR_FRAC="${FINAL_LR_FRAC:-0.0}"
+CORE_METRIC_EVERY="${CORE_METRIC_EVERY:-999999}"
+MATRIX_LR="${MATRIX_LR:-}"
+DEVICE_TYPE="${DEVICE_TYPE:-}"
 TARGET_METRIC="${TARGET_METRIC:-val_bpb}"
 TARGET_THRESHOLD="${TARGET_THRESHOLD:--1}"
 
@@ -73,14 +78,22 @@ CMD=(
     --final-lr-frac="$FINAL_LR_FRAC"
     --eval-every="$EVAL_EVERY"
     --eval-tokens="$EVAL_TOKENS"
-    --core-metric-every=-1
+    --core-metric-every="$CORE_METRIC_EVERY"
     --sample-every=-1
     --save-every=-1
     --num-iterations="$NUM_ITERATIONS"
     --time-to-target-metric="$TARGET_METRIC"
     --time-to-target-threshold="$TARGET_THRESHOLD"
+    --seed="$SEED"
     --run="$WANDB_RUN"
 )
+
+if [ -n "$MATRIX_LR" ]; then
+    CMD+=(--matrix-lr="$MATRIX_LR")
+fi
+if [ -n "$DEVICE_TYPE" ]; then
+    CMD+=(--device-type="$DEVICE_TYPE")
+fi
 
 set +e
 "${CMD[@]}" 2>&1 | tee "$LOG_FILE"
@@ -89,12 +102,6 @@ set -e
 
 END_TIME=$(date +%s)
 WALL_TIME_SEC=$((END_TIME - START_TIME))
-
-if [ $TRAIN_EXIT -eq 0 ]; then
-    STATUS="ok"
-else
-    STATUS="failed"
-fi
 
 PARSED_METRICS=$(python - "$LOG_FILE" <<'PY'
 import re
@@ -130,6 +137,8 @@ else:
     tt_extrap_sec = ""
     extrap_method = ""
 
+nan_detected = 1 if re.search(r"(?:loss|Validation bpb|Minimum validation bpb):\s*nan\b", text, re.IGNORECASE) else 0
+
 print(f"TOK_MEDIAN={tok_median}")
 print(f"DT_MEDIAN={dt_median}")
 print(f"FINAL_LOSS={final_loss}")
@@ -138,13 +147,21 @@ print(f"PEAK_MEM_MIB={peak_mem}")
 print(f"TT_MEASURED_SEC={tt_measured_sec}")
 print(f"TT_EXTRAP_SEC={tt_extrap_sec}")
 print(f"EXTRAP_METHOD={extrap_method}")
+print(f"NAN_DETECTED={nan_detected}")
 PY
 )
 eval "$PARSED_METRICS"
 
+if [ $TRAIN_EXIT -ne 0 ]; then
+    STATUS="failed"
+elif [ "${NAN_DETECTED:-0}" = "1" ]; then
+    STATUS="failed_nan"
+else
+    STATUS="ok"
+fi
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-SEED=42
 
 echo "${TIMESTAMP},${GIT_COMMIT},${RUN_LABEL},${SEED},${DEPTH},${MAX_SEQ_LEN},${DEVICE_BATCH_SIZE},${TOTAL_BATCH_SIZE},${TARGET_PARAM_DATA_RATIO},${WARMDOWN_RATIO},${WARMDOWN_SHAPE},${TARGET_METRIC},${TARGET_THRESHOLD},${TT_MEASURED_SEC},${TT_EXTRAP_SEC},${EXTRAP_METHOD},${TOK_MEDIAN},${DT_MEDIAN},${WALL_TIME_SEC},${FINAL_LOSS},${MIN_VAL_BPB},${PEAK_MEM_MIB},${STATUS}" >> "$RESULTS_FILE"
 
@@ -154,4 +171,7 @@ log "Results CSV: $RESULTS_FILE"
 
 if [ $TRAIN_EXIT -ne 0 ]; then
     exit $TRAIN_EXIT
+fi
+if [ "$STATUS" = "failed_nan" ]; then
+    exit 3
 fi
