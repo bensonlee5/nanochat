@@ -87,6 +87,39 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
+def _build_magma_factors(
+    momentum_estimate: Tensor,
+    grads: Tensor,
+    scale_ema: Tensor,
+    *,
+    p: float,
+    tau: float,
+    ema_beta: float,
+) -> tuple[Tensor, Tensor]:
+    """
+    Compute MAGMA per-block damping scales and Bernoulli masks.
+
+    - momentum_estimate, grads: (num_blocks, ...)
+    - scale_ema: (num_blocks,) in float32, updated in-place
+    Returns:
+        scale_ema (updated), mask (bool vector of shape (num_blocks,))
+    """
+    num_blocks = grads.shape[0]
+    mu = momentum_estimate.float().view(num_blocks, -1)
+    g = grads.float().view(num_blocks, -1)
+
+    # Block-wise cosine similarity between first moment and current gradient.
+    dot = (mu * g).sum(dim=1)
+    denom = mu.norm(dim=1) * g.norm(dim=1)
+    cos_sim = (dot / denom.clamp_min(1e-12)).clamp(-1.0, 1.0)
+
+    s_tilde = torch.sigmoid(cos_sim / tau)
+    scale_ema.mul_(ema_beta).add_(s_tilde, alpha=1 - ema_beta)
+
+    # Bernoulli survival mask at probability p.
+    mask = torch.rand_like(scale_ema).lt_(p)
+    return scale_ema, mask
+
 @torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
@@ -97,6 +130,8 @@ def muon_step_fused(
     lr_t: Tensor,                   # () - 0-D CPU tensor, learning rate
     wd_t: Tensor,                   # () - 0-D CPU tensor, weight decay
     beta2_t: Tensor,                # () - 0-D CPU tensor, beta2 for second moment
+    magma_scale: Tensor,            # (12, 1, 1) - MAGMA damping scale
+    magma_mask: Tensor,             # (12, 1, 1) - MAGMA Bernoulli mask
     ns_steps: int,                  # 5 - number of Newton-Schulz/Polar Express iterations
     red_dim: int,                   # -1 or -2 - reduction dimension for variance
 ) -> None:
@@ -139,11 +174,16 @@ def muon_step_fused(
     final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
     g = g * final_scale.to(g.dtype)
 
-    # Cautious weight decay + parameter update
+    # Parameter update:
+    # - MAGMA only modulates gradient-driven updates
+    # - Cautious weight decay is always applied (not masked by MAGMA)
     lr = lr_t.to(g.dtype)
     wd = wd_t.to(g.dtype)
-    mask = (g * stacked_params) >= 0
-    stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
+    grad_delta = lr * g
+    grad_delta = grad_delta * magma_scale.to(grad_delta.dtype) * magma_mask.to(grad_delta.dtype)
+    cautious_mask = (g * stacked_params) >= 0
+    wd_delta = lr * wd * stacked_params * cautious_mask
+    stacked_params.sub_(grad_delta + wd_delta)
 
 # -----------------------------------------------------------------------------
 # Single GPU version of the MuonAdamW optimizer.
@@ -174,6 +214,7 @@ class MuonAdamW(torch.optim.Optimizer):
             - 'kind': 'adamw' or 'muon'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
             - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+              and optional MAGMA fields: 'magma', 'magma_p', 'magma_tau', 'magma_ema_beta'
     """
     def __init__(self, param_groups: list[dict]):
         super().__init__(param_groups, defaults={})
@@ -263,6 +304,28 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t.fill_(group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5)
         self._muon_wd_t.fill_(group["weight_decay"])
 
+        # MAGMA: per-matrix damping + Bernoulli masking, applied to final update.
+        if group.get("magma", False):
+            if "magma_scale_ema" not in state:
+                state["magma_scale_ema"] = torch.ones(num_params, dtype=torch.float32, device=device)
+            momentum_next = torch.lerp(momentum_buffer.float(), stacked_grads.float(), 1 - group["momentum"])
+            scale_ema, mask = _build_magma_factors(
+                momentum_next,
+                stacked_grads,
+                state["magma_scale_ema"],
+                p=group["magma_p"],
+                tau=group["magma_tau"],
+                ema_beta=group["magma_ema_beta"],
+            )
+            magma_scale = scale_ema.to(dtype=dtype).view(num_params, 1, 1)
+            magma_mask = mask.to(dtype=dtype).view(num_params, 1, 1)
+        else:
+            if "magma_identity_scale" not in state:
+                state["magma_identity_scale"] = torch.ones(num_params, 1, 1, dtype=dtype, device=device)
+                state["magma_identity_mask"] = torch.ones(num_params, 1, 1, dtype=dtype, device=device)
+            magma_scale = state["magma_identity_scale"]
+            magma_mask = state["magma_identity_mask"]
+
         # Single fused kernel: momentum -> polar_express -> variance_reduction -> update
         muon_step_fused(
             stacked_grads,
@@ -273,6 +336,8 @@ class MuonAdamW(torch.optim.Optimizer):
             self._muon_lr_t,
             self._muon_wd_t,
             self._muon_beta2_t,
+            magma_scale,
+            magma_mask,
             group["ns_steps"],
             red_dim,
         )
@@ -351,6 +416,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
             - 'kind': 'adamw' or 'muon'
             - For AdamW groups: 'lr', 'betas', 'eps', 'weight_decay'
             - For Muon groups: 'lr', 'momentum', 'ns_steps', 'beta2', 'weight_decay'
+              and optional MAGMA fields: 'magma', 'magma_p', 'magma_tau', 'magma_ema_beta'
     """
     def __init__(self, param_groups: list[dict]):
         super().__init__(param_groups, defaults={})
@@ -466,6 +532,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
         if "second_momentum_buffer" not in state:
             state_shape = (chunk_size, shape[-2], 1) if shape[-2] >= shape[-1] else (chunk_size, 1, shape[-1])
             state["second_momentum_buffer"] = torch.zeros(state_shape, dtype=dtype, device=device)
+        if group.get("magma", False) and "magma_scale_ema" not in state:
+            state["magma_scale_ema"] = torch.ones(chunk_size, dtype=torch.float32, device=device)
         red_dim = -1 if shape[-2] >= shape[-1] else -2
 
         # Build output buffer for all_gather
@@ -480,10 +548,35 @@ class DistMuonAdamW(torch.optim.Optimizer):
             self._muon_beta2_t.fill_(group["beta2"])
             self._muon_lr_t.fill_(group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5)
             self._muon_wd_t.fill_(group["weight_decay"])
+
+            if group.get("magma", False):
+                momentum_next = torch.lerp(
+                    state["momentum_buffer"][:num_owned].float(),
+                    grad_chunk[:num_owned].float(),
+                    1 - group["momentum"],
+                )
+                scale_ema, mask = _build_magma_factors(
+                    momentum_next,
+                    grad_chunk[:num_owned],
+                    state["magma_scale_ema"][:num_owned],
+                    p=group["magma_p"],
+                    tau=group["magma_tau"],
+                    ema_beta=group["magma_ema_beta"],
+                )
+                magma_scale = scale_ema.to(dtype=dtype).view(num_owned, 1, 1)
+                magma_mask = mask.to(dtype=dtype).view(num_owned, 1, 1)
+            else:
+                if "magma_identity_scale" not in state:
+                    state["magma_identity_scale"] = torch.ones(chunk_size, 1, 1, dtype=dtype, device=device)
+                    state["magma_identity_mask"] = torch.ones(chunk_size, 1, 1, dtype=dtype, device=device)
+                magma_scale = state["magma_identity_scale"][:num_owned]
+                magma_mask = state["magma_identity_mask"][:num_owned]
+
             muon_step_fused(
                 grad_chunk[:num_owned], stacked_owned,
                 state["momentum_buffer"][:num_owned], state["second_momentum_buffer"][:num_owned],
                 self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t, self._muon_beta2_t,
+                magma_scale, magma_mask,
                 group["ns_steps"], red_dim,
             )
             updated_params[:num_owned].copy_(stacked_owned)

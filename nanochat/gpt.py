@@ -345,7 +345,19 @@ class GPT(nn.Module):
             'total': total,
         }
 
-    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
+    def setup_optimizer(
+        self,
+        unembedding_lr=0.004,
+        embedding_lr=0.2,
+        matrix_lr=0.02,
+        weight_decay=0.0,
+        adam_betas=(0.8, 0.95),
+        scalar_lr=0.5,
+        magma=False,
+        magma_p=0.5,
+        magma_tau=2.0,
+        magma_ema_beta=0.9,
+    ):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
 
@@ -361,6 +373,11 @@ class GPT(nn.Module):
         # Scale the LR for the AdamW parameters by ∝1/√dmodel (tuned for 768 dim model)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
+        if magma:
+            assert 0.0 < magma_p <= 1.0, f"magma_p must be in (0, 1], got {magma_p}"
+            assert magma_tau > 0, f"magma_tau must be > 0, got {magma_tau}"
+            assert 0.0 <= magma_ema_beta <= 1.0, f"magma_ema_beta must be in [0, 1], got {magma_ema_beta}"
+            print0(f"MAGMA enabled on Muon groups: p={magma_p:.3f}, tau={magma_tau:.3f}, ema_beta={magma_ema_beta:.3f}")
 
         # Build param_groups with all required fields explicit
         param_groups = [
@@ -377,6 +394,7 @@ class GPT(nn.Module):
             param_groups.append(dict(
                 kind='muon', params=group_params, lr=matrix_lr,
                 momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                magma=magma, magma_p=magma_p, magma_tau=magma_tau, magma_ema_beta=magma_ema_beta,
             ))
 
         Factory = DistMuonAdamW if ddp else MuonAdamW

@@ -65,6 +65,10 @@ parser.add_argument("--matrix-lr", type=float, default=0.02, help="learning rate
 parser.add_argument("--scalar-lr", type=float, default=0.5, help="learning rate for scalars (resid_lambdas, x0_lambdas)")
 parser.add_argument("--adam-beta1", type=float, default=0.8, help="Adam beta1 for embedding/unembedding")
 parser.add_argument("--adam-beta2", type=float, default=0.95, help="Adam beta2 for embedding/unembedding")
+parser.add_argument("--magma", action="store_true", help="enable MAGMA masking/damping on Muon matrix updates")
+parser.add_argument("--magma-p", type=float, default=0.5, help="MAGMA Bernoulli survival probability p")
+parser.add_argument("--magma-tau", type=float, default=2.0, help="MAGMA temperature tau for sigmoid(cos/tau)")
+parser.add_argument("--magma-ema-beta", type=float, default=0.9, help="MAGMA EMA beta for damping scale smoothing")
 parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of iterations for LR warmup")
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
@@ -307,6 +311,11 @@ optimizer = model.setup_optimizer(
     # Muon hyperparameters
     matrix_lr=args.matrix_lr * batch_lr_scale,
     weight_decay=weight_decay_scaled,
+    # MAGMA on Muon groups
+    magma=args.magma,
+    magma_p=args.magma_p,
+    magma_tau=args.magma_tau,
+    magma_ema_beta=args.magma_ema_beta,
 )
 
 if resuming:
