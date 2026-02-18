@@ -42,13 +42,19 @@ if not rows:
 by_seed = defaultdict(dict)
 mode_order = ["inferred", "confirmation", "fallback"]
 present_modes = set()
+excluded_non_ok = defaultdict(int)
 for r in rows:
     seed = r["seed"]
     mode = r["lane_b_decision"]
     present_modes.add(mode)
-    measured = float(r["time_to_target_sec_measured"]) if r["time_to_target_sec_measured"] else None
-    extrap = float(r["time_to_target_sec_extrapolated"]) if r["time_to_target_sec_extrapolated"] else None
-    score = measured if measured is not None else extrap
+    status = (r.get("status", "") or "").strip().lower()
+    if status != "ok":
+        score = None
+        excluded_non_ok[mode] += 1
+    else:
+        measured = float(r["time_to_target_sec_measured"]) if r["time_to_target_sec_measured"] else None
+        extrap = float(r["time_to_target_sec_extrapolated"]) if r["time_to_target_sec_extrapolated"] else None
+        score = measured if measured is not None else extrap
     by_seed[seed][mode] = score
 
 ordered_modes = [m for m in mode_order if m in present_modes]
@@ -82,6 +88,14 @@ for seed in sorted(by_seed, key=lambda x: int(x)):
 print("")
 print("Win tally:")
 print(", ".join([f"{mode}={wins[mode]}" for mode in ordered_modes]) + f", tie_or_missing={wins['tie_or_missing']}")
+if excluded_non_ok:
+    excluded_str = ", ".join(
+        f"{mode}={excluded_non_ok[mode]}"
+        for mode in ordered_modes
+        if excluded_non_ok.get(mode, 0) > 0
+    )
+    if excluded_str:
+        print(f"Excluded non-ok runs from ranking: {excluded_str}")
 
 best_mode = None
 best_count = -1

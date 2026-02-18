@@ -85,13 +85,19 @@ while IFS=$'\t' read -r run_id seed mode chosen_ratio status log_path; do
     fi
   fi
 
-  if [ ! -f "$log_path" ]; then
+  log_args=()
+  if [ -f "$log_path" ]; then
+    log_args=(--log-path "$log_path")
+  else
     echo "WARNING: missing log file for $run_id: $log_path"
+    if [ "$status" = "ok" ]; then
+      status="missing_log"
+    fi
   fi
 
   "$PYTHON_BIN" -m scripts.lane_b_log_run \
     --schema-path "$LANE_B_SCHEMA_PATH" \
-    --log-path "$log_path" \
+    "${log_args[@]}" \
     --run-id "$run_id" \
     --seed "$seed" \
     --dataset-id "$LANE_B_DATASET_ID" \

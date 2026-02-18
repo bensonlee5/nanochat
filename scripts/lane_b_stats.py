@@ -16,7 +16,6 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np  # noqa: E402
 import optuna  # noqa: E402
-import powerlaw  # noqa: E402
 
 MASK64 = (1 << 64) - 1
 HASH_BASE = 11400714819323198485  # odd 64-bit constant
@@ -26,57 +25,138 @@ def utc_timestamp():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def fit_power_law(xs, ys, optuna_seed=42, optuna_trials=200):
-    """Fit y = a * x^{-exponent} using powerlaw PDF basis + optuna search."""
+def _sanitize_power_law_inputs(xs, ys, min_points):
     xs = np.asarray(xs, dtype=np.float64)
     ys = np.asarray(ys, dtype=np.float64)
-    valid = (xs > 0) & (ys > 0)
+    valid = np.isfinite(xs) & np.isfinite(ys) & (xs > 0) & (ys > 0)
     xs, ys = xs[valid], ys[valid]
-    if xs.size < 2:
-        raise ValueError("Need at least two positive points for power-law fit")
+    if xs.size < min_points:
+        raise ValueError(f"Need at least {min_points} positive finite points for power-law fit")
 
-    ly = np.log(ys)
-    xmin, xmax = float(np.min(xs)), float(np.max(xs))
+    order = np.argsort(xs)
+    xs = xs[order]
+    ys = ys[order]
+    if np.unique(xs).size < 2:
+        raise ValueError("Need at least two distinct x-values for power-law fit")
+    return xs, ys
 
-    def objective(trial):
-        alpha = trial.suggest_float("alpha", 1e-4, 5.0)
-        try:
-            dist = powerlaw.Power_Law(parameters=[alpha], xmin=xmin, xmax=xmax, discrete=False)
-            phi = np.asarray(dist.pdf(xs), dtype=np.float64)
-        except KeyboardInterrupt:
-            raise
-        except (ValueError, FloatingPointError, OverflowError, ZeroDivisionError):
-            return float("inf")
-        if np.any(phi <= 0) or np.any(~np.isfinite(phi)):
-            return float("inf")
-        ln_phi = np.log(phi)
-        log_scale = float(np.mean(ly - ln_phi))
-        residual = ly - (log_scale + ln_phi)
-        return float(np.sum(residual * residual))
 
+def fit_power_law_simple(xs, ys, optuna_seed=42, optuna_trials=200):
+    """Fit y = a * x^{-exponent} using linear regression on log-log data."""
     if int(optuna_trials) < 1:
         raise ValueError("optuna_trials must be >= 1")
+    xs, ys = _sanitize_power_law_inputs(xs, ys, min_points=2)
+
+    log_x = np.log(xs)
+    log_y = np.log(ys)
+
+    # Linear regression: log_y = -exponent * log_x + log_a
+    slope, intercept = np.polyfit(log_x, log_y, 1)
+    if not np.isfinite(slope) or not np.isfinite(intercept):
+        raise ValueError("Non-finite linear fit parameters in fit_power_law_simple")
+    exponent = -slope
+    a = np.exp(intercept)
+
+    # Calculate R2
+    y_pred = a * np.power(xs, -exponent)
+    ss_res = np.sum((ys - y_pred) ** 2)
+    ss_tot = np.sum((ys - np.mean(ys)) ** 2)
+    r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
+    if not np.isfinite(a) or not np.isfinite(exponent) or not np.isfinite(r2):
+        raise ValueError("Non-finite fit result in fit_power_law_simple")
+
+    return float(a), float(exponent), float(r2)
+
+
+def fit_power_law(xs, ys, optuna_seed=42, optuna_trials=200):
+    """Backward-compatible power-law API used by Lane B tests and callers."""
+    return fit_power_law_simple(xs, ys, optuna_seed=optuna_seed, optuna_trials=optuna_trials)
+
+
+def fit_shifted_power_law(xs, ys, optuna_seed=42, optuna_trials=200):
+    """Fit y = A * x^{-gamma} + B by optimizing B via Optuna."""
+    if int(optuna_trials) < 1:
+        raise ValueError("optuna_trials must be >= 1")
+    xs, ys = _sanitize_power_law_inputs(xs, ys, min_points=2)
+
+    simple_a, simple_gamma, simple_r2 = fit_power_law_simple(
+        xs, ys, optuna_seed=optuna_seed, optuna_trials=optuna_trials
+    )
+    if xs.size < 3:
+        # Not enough points for a stable asymptote fit.
+        return simple_a, simple_gamma, 0.0, simple_r2
+
+    min_y = float(np.min(ys))
+    y_span = float(np.max(ys) - min_y)
+    margin = max(1e-12, 1e-6 * max(abs(min_y), y_span, 1.0))
+    b_upper = min_y - margin
+    if b_upper <= 0:
+        # If the asymptote range collapses, use the simpler model.
+        return simple_a, simple_gamma, 0.0, simple_r2
+
+    log_x = np.log(xs)
+
+    def objective(trial):
+        b = trial.suggest_float("b", 0.0, b_upper)
+
+        y_shifted = ys - b
+        if np.any(y_shifted <= 0):
+            return float("inf")
+
+        # Fit simple power law to shifted data: y - b = A * x^-gamma
+        log_y_shifted = np.log(y_shifted)
+        slope, intercept = np.polyfit(log_x, log_y_shifted, 1)
+        if not np.isfinite(slope) or not np.isfinite(intercept):
+            return float("inf")
+
+        # We want to minimize the squared error of the linear fit in log-log space
+        # This roughly corresponds to maximizing the likelihood of the power law
+        y_fit_log = slope * log_x + intercept
+        residual = log_y_shifted - y_fit_log
+        mse = np.mean(residual ** 2)
+        return float(mse) if np.isfinite(mse) else float("inf")
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     sampler = optuna.samplers.TPESampler(seed=int(optuna_seed))
     study = optuna.create_study(direction="minimize", sampler=sampler)
     study.optimize(objective, n_trials=int(optuna_trials), n_jobs=1, show_progress_bar=False)
+    if not np.isfinite(study.best_value):
+        return simple_a, simple_gamma, 0.0, simple_r2
 
-    best_alpha = study.best_params["alpha"]
-    dist = powerlaw.Power_Law(parameters=[best_alpha], xmin=xmin, xmax=xmax, discrete=False)
-    phi = np.asarray(dist.pdf(xs), dtype=np.float64)
-    ln_phi = np.log(phi)
-    log_scale = float(np.mean(ly - ln_phi))
+    best_b = float(study.best_params.get("b", 0.0))
+    if not (0.0 <= best_b < min_y):
+        return simple_a, simple_gamma, 0.0, simple_r2
 
-    exponent = float(best_alpha)
-    norm_const = float(np.mean(phi * np.power(xs, exponent)))
-    a = float(math.exp(log_scale) * norm_const)
+    # Re-compute parameters with best B
+    y_shifted = ys - best_b
+    if np.any(y_shifted <= 0):
+        return simple_a, simple_gamma, 0.0, simple_r2
+    log_x = np.log(xs)
+    log_y_shifted = np.log(y_shifted)
+    slope, intercept = np.polyfit(log_x, log_y_shifted, 1)
+    if not np.isfinite(slope) or not np.isfinite(intercept):
+        return simple_a, simple_gamma, 0.0, simple_r2
 
-    ss_res = float(study.best_value)
-    ly_mean = float(np.mean(ly))
-    ss_tot = float(np.sum((ly - ly_mean) ** 2))
+    gamma = -slope
+    a = np.exp(intercept)
+
+    # Calculate R2 on the original scale
+    y_pred = a * np.power(xs, -gamma) + best_b
+    ss_res = np.sum((ys - y_pred) ** 2)
+    ss_tot = np.sum((ys - np.mean(ys)) ** 2)
     r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
-    return a, exponent, r2
+
+    if (
+        (not np.isfinite(a))
+        or (not np.isfinite(gamma))
+        or (not np.isfinite(r2))
+        or gamma <= 0
+        or a <= 0
+        or (r2 + 1e-9 < simple_r2)
+    ):
+        return simple_a, simple_gamma, 0.0, simple_r2
+
+    return float(a), float(gamma), float(best_b), float(r2)
 
 
 def build_context_lengths(min_ctx, max_ctx, num_points):
@@ -232,7 +312,7 @@ def main():
     parser.add_argument("--dataset-id", type=str, default="", help="dataset identifier to store in output JSON")
     parser.add_argument("--tokenizer-id", type=str, default="default", help="tokenizer identifier to store in output JSON")
     parser.add_argument("--max-docs", type=int, default=5000, help="max number of documents to sample (-1 for all available)")
-    parser.add_argument("--max-tokens", type=int, default=500000, help="max number of tokens to sample (-1 for no explicit cap)")
+    parser.add_argument("--max-tokens", type=int, default=2097152, help="max number of tokens to sample (-1 for no explicit cap)")
     parser.add_argument("--tokenizer-threads", type=int, default=4, help="threads used by tokenizer batch encoding")
     parser.add_argument("--correlation-min-sep", type=int, default=1, help="minimum token separation for correlation fit")
     parser.add_argument("--correlation-max-sep", type=int, default=64, help="maximum token separation for correlation fit")
@@ -241,6 +321,8 @@ def main():
     parser.add_argument("--entropy-num-points", type=int, default=8, help="number of log-spaced context lengths")
     parser.add_argument("--fit-optuna-seed", type=int, default=42, help="fixed Optuna sampler seed for deterministic power-law fits")
     parser.add_argument("--fit-optuna-trials", type=int, default=200, help="Optuna trial count per power-law fit")
+    parser.add_argument("--corr-r2-warn-threshold", type=float, default=0.90, help="warn when corr power-law fit R^2 falls below this value")
+    parser.add_argument("--entropy-r2-warn-threshold", type=float, default=0.90, help="warn when entropy power-law fit R^2 falls below this value")
     parser.add_argument("--output-json", type=str, required=True, help="path to output JSON")
     args = parser.parse_args()
 
@@ -267,6 +349,7 @@ def main():
     )
     corr_x = [x["separation"] for x in corr_curve]
     corr_y = [x["frobenius_norm"] for x in corr_curve]
+    
     _, corr_exp, corr_r2 = fit_power_law(
         corr_x,
         corr_y,
@@ -296,19 +379,36 @@ def main():
     if len(entropy_curve) < 2:
         raise ValueError("Need at least two entropy points; increase token sample or reduce context window")
 
-    h_inf_bits = min(item["conditional_entropy_bits"] for item in entropy_curve)
-    eps = 1e-12
-    for item in entropy_curve:
-        item["entropy_gap_bits"] = max(item["conditional_entropy_bits"] - h_inf_bits, eps)
-
+    # For entropy, we fit y = A * x^-gamma + B (where B is H_inf)
     ent_x = [x["context_len"] for x in entropy_curve]
-    ent_y = [x["entropy_gap_bits"] for x in entropy_curve]
-    _, ent_exp, ent_r2 = fit_power_law(
+    ent_y = [x["conditional_entropy_bits"] for x in entropy_curve]
+    
+    _, ent_exp, h_inf_bits, ent_r2 = fit_shifted_power_law(
         ent_x,
         ent_y,
         optuna_seed=args.fit_optuna_seed,
         optuna_trials=args.fit_optuna_trials,
     )
+
+    corr_r2_low_quality = corr_r2 < args.corr_r2_warn_threshold
+    entropy_r2_low_quality = ent_r2 < args.entropy_r2_warn_threshold
+    if corr_r2_low_quality:
+        print(
+            "WARNING: corr power-law fit appears weak "
+            f"(R^2={corr_r2:.4f} < {args.corr_r2_warn_threshold:.4f}). "
+            "Consider increasing --max-tokens."
+        )
+    if entropy_r2_low_quality:
+        print(
+            "WARNING: entropy power-law fit appears weak "
+            f"(R^2={ent_r2:.4f} < {args.entropy_r2_warn_threshold:.4f}). "
+            "Consider increasing --max-tokens."
+        )
+
+    # Post-calculate gap bits for visualization/logging using the fitted H_inf
+    eps = 1e-12
+    for item in entropy_curve:
+        item["entropy_gap_bits"] = max(item["conditional_entropy_bits"] - h_inf_bits, eps)
 
     dataset_id = args.dataset_id if args.dataset_id else f"fineweb_edu_100b_{args.split}"
     result = {
@@ -325,10 +425,14 @@ def main():
         "fit_optuna_trials": int(args.fit_optuna_trials),
         "corr_decay_exponent": float(corr_exp),
         "corr_decay_r2": float(corr_r2),
+        "corr_decay_r2_warn_threshold": float(args.corr_r2_warn_threshold),
+        "corr_decay_r2_low_quality": "yes" if corr_r2_low_quality else "no",
         "entropy_fit_min_ctx": int(args.entropy_min_ctx),
         "entropy_fit_max_ctx": int(args.entropy_max_ctx),
         "entropy_decay_exponent": float(ent_exp),
         "entropy_decay_r2": float(ent_r2),
+        "entropy_decay_r2_warn_threshold": float(args.entropy_r2_warn_threshold),
+        "entropy_decay_r2_low_quality": "yes" if entropy_r2_low_quality else "no",
         "entropy_h_inf_bits": float(h_inf_bits),
         "entropy_skipped_data_starved": skipped_data_starved,
         "token_unigram_collision_prob": float(sum_p_sq),
@@ -341,7 +445,7 @@ def main():
         f.write("\n")
 
     print(f"Wrote Lane B stats to {args.output_json}")
-    print(f"corr_decay_exponent={corr_exp:.6f}, entropy_decay_exponent={ent_exp:.6f}")
+    print(f"corr_decay_exponent={corr_exp:.6f}, entropy_decay_exponent={ent_exp:.6f}, h_inf={h_inf_bits:.4f}")
 
 
 if __name__ == "__main__":

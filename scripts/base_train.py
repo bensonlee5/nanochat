@@ -80,6 +80,12 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--time-to-target-metric", type=str, default="val_bpb", choices=["val_bpb", "core"], help="metric used for time-to-target tracking")
 parser.add_argument("--time-to-target-threshold", type=float, default=-1.0, help="target threshold for selected metric (-1 disables tracking)")
+parser.add_argument("--time-to-target-extrapolation", type=str, default="linear_recent_eval", choices=["linear_recent_eval", "power_law_recent_eval"], help="extrapolation mode for time-to-target estimates")
+parser.add_argument("--time-to-target-power-law-alpha", type=float, default=None, help="fixed alpha for power-law extrapolation mode")
+parser.add_argument("--time-to-target-power-law-l-inf", type=float, default=None, help="optional asymptote hint in metric space for power-law extrapolation mode")
+parser.add_argument("--time-to-target-power-law-min-points", type=int, default=3, help="minimum eval points for power-law extrapolation")
+parser.add_argument("--time-to-target-power-law-max-points", type=int, default=5, help="max recent eval points used by power-law extrapolation")
+parser.add_argument("--time-to-target-power-law-fit-r2-min", type=float, default=0.0, help="minimum R^2 required for power-law extrapolation (0 disables check)")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
 # Output
@@ -95,6 +101,25 @@ if not 0 <= args.warmdown_ratio <= 1:
     raise ValueError(f"--warmdown-ratio must be in [0, 1], got {args.warmdown_ratio}")
 if not 0 <= args.final_lr_frac <= 1:
     raise ValueError(f"--final-lr-frac must be in [0, 1], got {args.final_lr_frac}")
+if not 0.0 <= args.time_to_target_power_law_fit_r2_min <= 1.0:
+    raise ValueError(
+        f"--time-to-target-power-law-fit-r2-min must be in [0, 1], got {args.time_to_target_power_law_fit_r2_min}"
+    )
+if args.time_to_target_power_law_min_points < 2:
+    raise ValueError(
+        f"--time-to-target-power-law-min-points must be >= 2, got {args.time_to_target_power_law_min_points}"
+    )
+if args.time_to_target_power_law_max_points < args.time_to_target_power_law_min_points:
+    raise ValueError(
+        "--time-to-target-power-law-max-points must be >= "
+        "--time-to-target-power-law-min-points"
+    )
+if args.time_to_target_extrapolation == "power_law_recent_eval":
+    if args.time_to_target_power_law_alpha is None or args.time_to_target_power_law_alpha <= 0:
+        raise ValueError(
+            "--time-to-target-power-law-alpha must be > 0 when "
+            "--time-to-target-extrapolation=power_law_recent_eval"
+        )
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
@@ -422,9 +447,28 @@ else:
 
 if args.time_to_target_threshold > 0:
     print0(f"Tracking time-to-target using {args.time_to_target_metric} with threshold {args.time_to_target_threshold}")
-    print0("Time-to-target extrapolation method: linear fit over the most recent eval points")
+    if args.time_to_target_extrapolation == "linear_recent_eval":
+        print0("Time-to-target extrapolation method: linear fit over the most recent eval points")
+    else:
+        extra = ""
+        if args.time_to_target_power_law_l_inf is not None:
+            extra = f", L_inf_hint={args.time_to_target_power_law_l_inf:.6f}"
+        print0(
+            "Time-to-target extrapolation method: "
+            "power-law fit over recent eval points "
+            f"(alpha={args.time_to_target_power_law_alpha:.6f}{extra})"
+        )
 
-def extrapolate_time_to_target(eval_points, threshold, metric_name):
+
+def metric_to_proxy(value, metric_name):
+    if metric_name == "val_bpb":
+        return float(value)
+    if metric_name == "core":
+        return -float(value)
+    raise ValueError(f"Unknown metric name: {metric_name}")
+
+
+def extrapolate_time_to_target_linear(eval_points, threshold, metric_name):
     """Linear extrapolation of target crossing from recent eval points."""
     if len(eval_points) < 2:
         return None, "insufficient_points"
@@ -453,6 +497,91 @@ def extrapolate_time_to_target(eval_points, threshold, metric_name):
     if t_target < x_last:
         return None, "target_crossed_in_past"
     return t_target, "linear_recent_eval"
+
+
+def extrapolate_time_to_target_power_law(
+    eval_points,
+    threshold,
+    metric_name,
+    alpha,
+    l_inf_hint=None,
+    min_points=3,
+    max_points=5,
+    fit_r2_min=0.0,
+):
+    """Power-law extrapolation with fixed alpha: y = L_inf + A * t^{-alpha}."""
+    if alpha is None or alpha <= 0:
+        return None, "invalid_alpha"
+    if max_points < min_points:
+        return None, "invalid_point_window"
+
+    recent = eval_points[-max_points:]
+    # Power-law in time needs positive x-values.
+    filtered = [(t, y) for t, y in recent if t > 0]
+    if len(filtered) < min_points:
+        return None, "insufficient_positive_time_points"
+
+    xs = [float(t) for t, _ in filtered]
+    ys_proxy = [metric_to_proxy(y, metric_name) for _, y in filtered]
+    threshold_proxy = metric_to_proxy(threshold, metric_name)
+    x_feat = [t ** (-alpha) for t in xs]
+
+    if l_inf_hint is not None:
+        L_inf = metric_to_proxy(l_inf_hint, metric_name)
+        denom = sum(x * x for x in x_feat)
+        if denom <= 0:
+            return None, "degenerate_feature_axis"
+        A = sum(x * (y - L_inf) for x, y in zip(x_feat, ys_proxy)) / denom
+    else:
+        x_mean = sum(x_feat) / len(x_feat)
+        y_mean = sum(ys_proxy) / len(ys_proxy)
+        denom = sum((x - x_mean) ** 2 for x in x_feat)
+        if denom <= 0:
+            return None, "degenerate_feature_axis"
+        A = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_feat, ys_proxy)) / denom
+        L_inf = y_mean - A * x_mean
+
+    if A <= 0:
+        return None, "non_positive_power_coeff"
+
+    y_hat = [L_inf + A * x for x in x_feat]
+    ss_res = sum((y - yh) ** 2 for y, yh in zip(ys_proxy, y_hat))
+    y_mean = sum(ys_proxy) / len(ys_proxy)
+    ss_tot = sum((y - y_mean) ** 2 for y in ys_proxy)
+    fit_r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
+    if fit_r2_min > 0 and fit_r2 < fit_r2_min:
+        return None, "low_power_law_fit_r2"
+
+    gap = threshold_proxy - L_inf
+    if gap <= 0:
+        return None, "threshold_not_above_asymptote"
+    ratio = A / gap
+    if ratio <= 0:
+        return None, "non_positive_ratio_inside_power"
+
+    t_target = ratio ** (1.0 / alpha)
+    if not math.isfinite(t_target) or t_target <= 0:
+        return None, "non_finite_target_time"
+    if t_target < xs[-1]:
+        return None, "target_crossed_in_past"
+    return t_target, "power_law_recent_eval"
+
+
+def extrapolate_time_to_target(eval_points, threshold, metric_name):
+    if args.time_to_target_extrapolation == "linear_recent_eval":
+        return extrapolate_time_to_target_linear(eval_points, threshold, metric_name)
+    if args.time_to_target_extrapolation == "power_law_recent_eval":
+        return extrapolate_time_to_target_power_law(
+            eval_points=eval_points,
+            threshold=threshold,
+            metric_name=metric_name,
+            alpha=float(args.time_to_target_power_law_alpha),
+            l_inf_hint=args.time_to_target_power_law_l_inf,
+            min_points=int(args.time_to_target_power_law_min_points),
+            max_points=int(args.time_to_target_power_law_max_points),
+            fit_r2_min=float(args.time_to_target_power_law_fit_r2_min),
+        )
+    return None, "unknown_extrapolation_mode"
 
 target_eval_points = []
 

@@ -9,10 +9,16 @@ lane_b_init
 lane_b_info
 echo "Step 1: computing n_scaling_params ..."
 
+N_KV_HEAD_ARGS=()
+if [ -n "${LANE_B_N_KV_HEAD:-}" ]; then
+  N_KV_HEAD_ARGS=(--n-kv-head "$LANE_B_N_KV_HEAD")
+fi
+
 N_SCALING_PARAMS="$("$PYTHON_BIN" -m scripts.lane_b_get_scaling_params \
   --depth "$LANE_B_DEPTH" \
   --aspect-ratio "$LANE_B_ASPECT_RATIO" \
   --head-dim "$LANE_B_HEAD_DIM" \
+  "${N_KV_HEAD_ARGS[@]}" \
   --max-seq-len "$LANE_B_MAX_SEQ_LEN" \
   --window-pattern "$LANE_B_WINDOW_PATTERN" \
   --output-json "$LANE_B_SCALING_JSON")"

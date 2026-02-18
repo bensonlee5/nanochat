@@ -153,6 +153,7 @@ Behavior note:
 - `runs/lane_b_run_all.sh` loads `LANE_B_BASELINE_THRESHOLD_ENV` automatically when present.
 - `runs/lane_b_run_all.sh` does not execute step 0 baselining for you.
 - `runs/lane_b_run_all.sh` stops after Step 5 when inference is unsolved and prints fallback instructions.
+- lane B currently supports only `LANE_B_TARGET_METRIC=val_bpb` (scripts fail fast on other values).
 
 ## Useful knobs
 
@@ -160,10 +161,15 @@ Set before running steps:
 
 - `LANE_B_DEPTH`, `LANE_B_ASPECT_RATIO`, `LANE_B_HEAD_DIM`, `LANE_B_MAX_SEQ_LEN`
 - `LANE_B_DEVICE_BATCH_SIZE`, `LANE_B_TOTAL_BATCH_SIZE`, `LANE_B_NUM_ITERATIONS`
-- `LANE_B_TARGET_METRIC`, `LANE_B_TARGET_THRESHOLD`, `LANE_B_THRESHOLD_OFFSET`
+- `LANE_B_TARGET_THRESHOLD`, `LANE_B_THRESHOLD_OFFSET`
 - `LANE_B_STATS_MAX_DOCS`, `LANE_B_STATS_MAX_TOKENS`
+- `LANE_B_CORR_R2_WARN_THRESHOLD`, `LANE_B_ENTROPY_R2_WARN_THRESHOLD`
 - `LANE_B_FIT_OPTUNA_SEED`, `LANE_B_FIT_OPTUNA_TRIALS`
 - `LANE_B_RUN_SEEDS`, `LANE_B_CALIB_ITERS`
 - `LANE_B_BASELINE_SEEDS`, `LANE_B_BASELINE_NUM_ITERATIONS`
 - `LANE_B_BASELINE_WORK_DIR`, `LANE_B_BASELINE_RESULTS_DIR`
 - `LANE_B_WANDB_RUN_BASE`
+- `LANE_B_L_INF_LOWER_BOUND_FROM_STATS_KEY` (default: `entropy_h_inf_bits`; set empty to disable)
+- `LANE_B_ALLOW_UNREACHABLE` (`0` default; set `1` to override feasibility gate)
+- `LANE_B_TIME_TO_TARGET_EXTRAPOLATION` (`linear_recent_eval` or `power_law_recent_eval`)
+- `LANE_B_TIME_TO_TARGET_POWER_LAW_MIN_POINTS`, `LANE_B_TIME_TO_TARGET_POWER_LAW_MAX_POINTS`, `LANE_B_TIME_TO_TARGET_POWER_LAW_FIT_R2_MIN`

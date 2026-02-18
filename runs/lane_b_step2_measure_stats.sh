@@ -21,6 +21,8 @@ echo "Step 2: measuring dataset statistics ..."
   --entropy-num-points "$LANE_B_ENT_NUM_POINTS" \
   --fit-optuna-seed "$LANE_B_FIT_OPTUNA_SEED" \
   --fit-optuna-trials "$LANE_B_FIT_OPTUNA_TRIALS" \
+  --corr-r2-warn-threshold "$LANE_B_CORR_R2_WARN_THRESHOLD" \
+  --entropy-r2-warn-threshold "$LANE_B_ENTROPY_R2_WARN_THRESHOLD" \
   --output-json "$LANE_B_STATS_JSON"
 
 echo "Wrote: $LANE_B_STATS_JSON"

@@ -29,6 +29,7 @@ WANDB_RUN="${WANDB_RUN:-dummy}"
 SEED="${SEED:-42}"
 
 DEPTH="${DEPTH:-12}"
+ASPECT_RATIO="${ASPECT_RATIO:-64}"
 HEAD_DIM="${HEAD_DIM:-128}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-2048}"
 DEVICE_BATCH_SIZE="${DEVICE_BATCH_SIZE:-32}"
@@ -66,6 +67,7 @@ START_TIME=$(date +%s)
 CMD=(
     python -m scripts.base_train
     --depth="$DEPTH"
+    --aspect-ratio="$ASPECT_RATIO"
     --head-dim="$HEAD_DIM"
     --window-pattern=L
     --max-seq-len="$MAX_SEQ_LEN"

@@ -28,11 +28,14 @@ fi
 "$SCRIPT_DIR/lane_b_step4_extract_calibration.sh"
 "$SCRIPT_DIR/lane_b_step5_infer_ratio.sh"
 
-if ! .venv/bin/python - <<'PY'
+LANE_B_ALLOW_UNREACHABLE="${LANE_B_ALLOW_UNREACHABLE:-0}"
+
+if ! .venv/bin/python - "$LANE_B_ALLOW_UNREACHABLE" <<'PY'
 import json
 import os
 import sys
 
+allow_unreachable = str(sys.argv[1]).strip() == "1"
 base_dir = os.environ.get("NANOCHAT_BASE_DIR", os.path.expanduser("~/.cache/nanochat"))
 work_dir = os.environ.get("LANE_B_WORK_DIR", os.path.join(base_dir, "lane_b_run"))
 infer_path = os.environ.get("LANE_B_INFER_JSON", os.path.join(work_dir, "infer.json"))
@@ -43,6 +46,8 @@ if d.get("solve_status") != "ok":
     raise SystemExit(f"unsolved:{d.get('solve_status')}")
 if d.get("alpha_data_plausible") != "yes":
     raise SystemExit(f"alpha_implausible:{d.get('alpha_data_plausible')}")
+if not allow_unreachable and d.get("feasibility_flag") != "feasible":
+    raise SystemExit(f"likely_unreachable:{d.get('feasibility_flag')}")
 PY
 then
   echo "Lane B inference is not promotable; stopping full pipeline after step 5."

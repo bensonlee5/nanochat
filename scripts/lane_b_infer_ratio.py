@@ -22,6 +22,15 @@ def parse_csv_floats(raw, arg_name):
     return vals
 
 
+def metric_value_to_proxy(value, metric_direction):
+    value = float(value)
+    if metric_direction == "lower_is_better":
+        return value
+    if metric_direction == "higher_is_better":
+        return -value
+    raise ValueError(f"Unknown metric direction: {metric_direction}")
+
+
 def validate_calibration_points(tokens, metrics, metric_direction):
     pairs = sorted(zip(tokens, metrics), key=lambda p: p[0])
     if len(pairs) < 2:
@@ -96,7 +105,15 @@ def infer_alpha(stats, paper_mapping_id, corr_weight, entropy_weight, alpha_over
     return float(alpha), paper_mapping_id
 
 
-def fit_calibration(tokens, metrics_proxy, alpha):
+def fit_calibration(
+    tokens,
+    metrics_proxy,
+    alpha,
+    l_inf_prior=None,
+    l_inf_prior_weight=1.0,
+    l_inf_lower_bound=None,
+    l_inf_upper_bound=None,
+):
     tokens = np.asarray(tokens, dtype=np.float64)
     y = np.asarray(metrics_proxy, dtype=np.float64)
     if tokens.size < 2:
@@ -106,30 +123,59 @@ def fit_calibration(tokens, metrics_proxy, alpha):
     if alpha <= 0:
         raise ValueError("alpha must be > 0")
 
+    if l_inf_prior is not None:
+        l_inf_prior = float(l_inf_prior)
+        if not math.isfinite(l_inf_prior):
+            raise ValueError("l_inf_prior must be finite")
+        l_inf_prior_weight = float(l_inf_prior_weight)
+        if l_inf_prior_weight <= 0:
+            raise ValueError("l_inf_prior_weight must be > 0 when l_inf_prior is provided")
+    else:
+        l_inf_prior_weight = 0.0
+
+    if l_inf_lower_bound is not None:
+        l_inf_lower_bound = float(l_inf_lower_bound)
+        if not math.isfinite(l_inf_lower_bound):
+            raise ValueError("l_inf_lower_bound must be finite")
+    if l_inf_upper_bound is not None:
+        l_inf_upper_bound = float(l_inf_upper_bound)
+        if not math.isfinite(l_inf_upper_bound):
+            raise ValueError("l_inf_upper_bound must be finite")
+    if (
+        l_inf_lower_bound is not None
+        and l_inf_upper_bound is not None
+        and l_inf_lower_bound > l_inf_upper_bound
+    ):
+        raise ValueError("l_inf_lower_bound cannot be greater than l_inf_upper_bound")
+
     x = np.power(tokens, -alpha)
+    X = np.column_stack([x, np.ones_like(x)])
+    y_aug = y
+    X_aug = X
+    if l_inf_prior is not None:
+        prior_scale = math.sqrt(l_inf_prior_weight)
+        X_aug = np.vstack([X_aug, np.asarray([0.0, prior_scale], dtype=np.float64)])
+        y_aug = np.concatenate([y_aug, np.asarray([prior_scale * l_inf_prior], dtype=np.float64)])
 
-    if tokens.size == 2:
-        denom = float(x[0] - x[1])
-        if abs(denom) < 1e-18:
-            raise ValueError("Degenerate 2-point calibration; choose distinct token counts")
-        A = float((y[0] - y[1]) / denom)
-        L_inf = float(y[0] - A * x[0])
-        y_hat = L_inf + A * x
-        ss_res = float(np.sum((y - y_hat) ** 2))
-        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
-        r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
-        return A, L_inf, r2
+    coeffs, _, _, _ = np.linalg.lstsq(X_aug, y_aug, rcond=None)
+    A = float(coeffs[0])
+    L_inf = float(coeffs[1])
 
-    x_mean = float(np.mean(x))
-    y_mean = float(np.mean(y))
-    denom = float(np.sum((x - x_mean) ** 2))
-    if denom <= 0:
-        raise ValueError("Degenerate calibration inputs for least-squares fit")
-    A = float(np.sum((x - x_mean) * (y - y_mean)) / denom)
-    L_inf = float(y_mean - A * x_mean)
+    L_inf_clamped = L_inf
+    if l_inf_lower_bound is not None:
+        L_inf_clamped = max(L_inf_clamped, l_inf_lower_bound)
+    if l_inf_upper_bound is not None:
+        L_inf_clamped = min(L_inf_clamped, l_inf_upper_bound)
+    if L_inf_clamped != L_inf:
+        denom = float(np.dot(x, x))
+        if denom <= 0:
+            raise ValueError("Degenerate calibration inputs for constrained fit")
+        L_inf = float(L_inf_clamped)
+        A = float(np.dot(x, y - L_inf) / denom)
+
     y_hat = L_inf + A * x
     ss_res = float(np.sum((y - y_hat) ** 2))
-    ss_tot = float(np.sum((y - y_mean) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
     r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
     return A, L_inf, r2
 
@@ -168,6 +214,11 @@ def main():
     parser.add_argument("--calib-metrics", type=str, required=True, help="comma-separated metric values aligned with calib-tokens")
     parser.add_argument("--target-metric-threshold", type=float, required=True, help="target threshold in metric space")
     parser.add_argument("--target-metric-direction", type=str, default="lower_is_better", choices=["lower_is_better", "higher_is_better"], help="metric direction")
+    parser.add_argument("--l-inf-lower-bound", type=float, default=None, help="optional lower bound for asymptote L_inf in metric space")
+    parser.add_argument("--l-inf-lower-bound-from-stats-key", type=str, default="", help="optional stats-json field name to use as L_inf lower bound in metric space (e.g. entropy_h_inf_bits)")
+    parser.add_argument("--l-inf-prior", type=float, default=None, help="optional prior target for asymptote L_inf in metric space")
+    parser.add_argument("--l-inf-prior-weight", type=float, default=1.0, help="strength of the optional L_inf prior term")
+    parser.add_argument("--l-inf-min", type=float, default=None, help="deprecated alias of --l-inf-lower-bound")
     parser.add_argument("--n-scaling-params", type=float, required=True, help="scaling parameter count")
     parser.add_argument("--default-ratio", type=float, default=10.5, help="fallback/default ratio for feasibility guard")
     parser.add_argument("--unreachable-multiplier", type=float, default=10.0, help="multiplier for unreachable-threshold guard")
@@ -176,6 +227,27 @@ def main():
 
     with open(args.stats_json, "r", encoding="utf-8") as f:
         stats = json.load(f)
+
+    if args.l_inf_min is not None and args.l_inf_lower_bound is not None:
+        raise ValueError("Use only one of --l-inf-min or --l-inf-lower-bound")
+    if args.l_inf_lower_bound is not None and args.l_inf_lower_bound_from_stats_key:
+        raise ValueError(
+            "Use at most one lower-bound source: --l-inf-lower-bound or --l-inf-lower-bound-from-stats-key"
+        )
+
+    l_inf_lower_bound_metric = args.l_inf_lower_bound
+    l_inf_lower_bound_source = "arg"
+    if l_inf_lower_bound_metric is None and args.l_inf_min is not None:
+        l_inf_lower_bound_metric = args.l_inf_min
+        l_inf_lower_bound_source = "arg_legacy_l_inf_min"
+    if args.l_inf_lower_bound_from_stats_key:
+        key = args.l_inf_lower_bound_from_stats_key
+        if key not in stats:
+            raise ValueError(f"Stats JSON missing key requested by --l-inf-lower-bound-from-stats-key: {key}")
+        l_inf_lower_bound_metric = float(stats[key])
+        if not math.isfinite(l_inf_lower_bound_metric):
+            raise ValueError(f"Stats key {key} produced non-finite lower bound")
+        l_inf_lower_bound_source = f"stats:{key}"
 
     alpha_data, mapping_used = infer_alpha(
         stats=stats,
@@ -206,11 +278,29 @@ def main():
     if args.target_metric_direction == "lower_is_better":
         metrics_proxy = calib_metrics
         threshold_proxy = args.target_metric_threshold
+        l_inf_lower_bound_proxy = l_inf_lower_bound_metric
+        l_inf_upper_bound_proxy = None
     else:
         metrics_proxy = [-m for m in calib_metrics]
         threshold_proxy = -args.target_metric_threshold
+        l_inf_lower_bound_proxy = None
+        l_inf_upper_bound_proxy = (
+            None if l_inf_lower_bound_metric is None else -float(l_inf_lower_bound_metric)
+        )
 
-    calib_A, calib_L_inf, calib_fit_r2 = fit_calibration(calib_tokens, metrics_proxy, alpha_data)
+    l_inf_prior_proxy = None
+    if args.l_inf_prior is not None:
+        l_inf_prior_proxy = metric_value_to_proxy(args.l_inf_prior, args.target_metric_direction)
+
+    calib_A, calib_L_inf, calib_fit_r2 = fit_calibration(
+        calib_tokens,
+        metrics_proxy,
+        alpha_data,
+        l_inf_prior=l_inf_prior_proxy,
+        l_inf_prior_weight=args.l_inf_prior_weight,
+        l_inf_lower_bound=l_inf_lower_bound_proxy,
+        l_inf_upper_bound=l_inf_upper_bound_proxy,
+    )
     inferred_target_tokens, solve_status = solve_target_tokens(
         A=calib_A,
         L_inf=calib_L_inf,
@@ -230,6 +320,12 @@ def main():
     else:
         feasibility_flag = "feasible"
 
+    l_inf_bound_active = False
+    if l_inf_lower_bound_proxy is not None and calib_L_inf <= l_inf_lower_bound_proxy + 1e-12:
+        l_inf_bound_active = True
+    if l_inf_upper_bound_proxy is not None and calib_L_inf >= l_inf_upper_bound_proxy - 1e-12:
+        l_inf_bound_active = True
+
     result = {
         "timestamp_utc": utc_timestamp(),
         "dataset_id": stats.get("dataset_id"),
@@ -247,6 +343,14 @@ def main():
         "calib_fit_r2": float(calib_fit_r2),
         "calib_A": float(calib_A),
         "calib_L_inf": float(calib_L_inf),
+        "calib_L_inf_lower_bound_metric": None if l_inf_lower_bound_metric is None else float(l_inf_lower_bound_metric),
+        "calib_L_inf_lower_bound_source": l_inf_lower_bound_source if l_inf_lower_bound_metric is not None else None,
+        "calib_L_inf_lower_bound_proxy": None if l_inf_lower_bound_proxy is None else float(l_inf_lower_bound_proxy),
+        "calib_L_inf_upper_bound_proxy": None if l_inf_upper_bound_proxy is None else float(l_inf_upper_bound_proxy),
+        "calib_L_inf_prior_metric": None if args.l_inf_prior is None else float(args.l_inf_prior),
+        "calib_L_inf_prior_proxy": None if l_inf_prior_proxy is None else float(l_inf_prior_proxy),
+        "calib_L_inf_prior_weight": float(args.l_inf_prior_weight) if args.l_inf_prior is not None else 0.0,
+        "calib_L_inf_bound_active": "yes" if l_inf_bound_active else "no",
         "target_metric_threshold": float(args.target_metric_threshold),
         "target_metric_direction": args.target_metric_direction,
         "target_metric_threshold_proxy": float(threshold_proxy),

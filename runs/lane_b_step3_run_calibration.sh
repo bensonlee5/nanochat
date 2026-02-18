@@ -28,6 +28,7 @@ for it in "${CALIB_ITERS[@]}"; do
   set +e
   "$PYTHON_BIN" -m scripts.base_train \
     --depth "$LANE_B_DEPTH" \
+    --aspect-ratio "$LANE_B_ASPECT_RATIO" \
     --head-dim "$LANE_B_HEAD_DIM" \
     --window-pattern "$LANE_B_WINDOW_PATTERN" \
     --max-seq-len "$LANE_B_MAX_SEQ_LEN" \

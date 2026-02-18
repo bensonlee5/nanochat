@@ -8,6 +8,7 @@ import json
 import re
 import statistics
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,8 +57,31 @@ def last_float(pattern, text):
     return float(matches[-1]) if matches else None
 
 
+def latest_run_segment(text):
+    """Return text from the most recent monotonic training-step segment.
+
+    If logs were appended across restarts, training step counters reset
+    (for example, 01000 -> 00000). In that case we only parse metrics from
+    the final segment to avoid mixing old + new runs.
+    """
+    step_re = re.compile(r"^step\s+(\d+)/(\d+)", re.IGNORECASE | re.MULTILINE)
+    matches = list(step_re.finditer(text))
+    if not matches:
+        return text
+
+    start_idx = 0
+    prev_step = -1
+    for i, m in enumerate(matches):
+        step = int(m.group(1))
+        if step < prev_step:
+            start_idx = i
+        prev_step = step
+    return text[matches[start_idx].start() :]
+
+
 def parse_metrics_from_log(log_path):
     text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    text = latest_run_segment(text)
 
     tok_vals = [int(x.replace(",", "")) for x in re.findall(r"tok/sec:\s*([\d,]+)", text)]
     dt_vals = [float(x) for x in re.findall(r"dt:\s*([0-9.]+)ms", text)]
@@ -147,7 +171,14 @@ def main():
 
     parsed_metrics = {}
     if args.log_path:
-        parsed_metrics = parse_metrics_from_log(args.log_path)
+        log_path = Path(args.log_path)
+        if log_path.exists():
+            parsed_metrics = parse_metrics_from_log(log_path)
+        else:
+            print(
+                f"WARNING: log file not found, skipping metric parsing: {args.log_path}",
+                file=sys.stderr,
+            )
 
     inference_data = {}
     if args.inference_json:
