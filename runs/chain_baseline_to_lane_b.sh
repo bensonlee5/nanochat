@@ -41,7 +41,7 @@ while true; do
     if [ -f "$BASELINE_THRESHOLD_ENV" ] && [ -f "$BASELINE_THRESHOLD_JSON" ]; then
         # threshold files exist → step2 completed successfully
         if [ -f "$BASELINE_RESULTS_CSV" ]; then
-            ok_count=$(grep -c ',ok,' "$BASELINE_RESULTS_CSV" 2>/dev/null) || ok_count=0
+            ok_count=$(grep -c ',ok$' "$BASELINE_RESULTS_CSV" 2>/dev/null) || ok_count=0
             echo "[$(date '+%H:%M:%S')] Baseline done: threshold files exist, $ok_count seeds with status=ok"
             if [ "$ok_count" -ge "$REQUIRED_SEEDS" ]; then
                 echo "All $REQUIRED_SEEDS seeds succeeded."
@@ -59,7 +59,7 @@ while true; do
 
     # Check partial progress
     if [ -f "$BASELINE_RESULTS_CSV" ]; then
-        ok_count=$(grep -c ',ok,' "$BASELINE_RESULTS_CSV" 2>/dev/null) || ok_count=0
+        ok_count=$(grep -c ',ok$' "$BASELINE_RESULTS_CSV" 2>/dev/null) || ok_count=0
         total_rows=$(wc -l < "$BASELINE_RESULTS_CSV" 2>/dev/null) || total_rows=0
         echo "[$(date '+%H:%M:%S')] Waiting... results CSV has $total_rows rows, $ok_count with status=ok"
     else

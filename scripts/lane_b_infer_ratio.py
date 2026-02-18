@@ -157,8 +157,8 @@ def solve_target_tokens(A, L_inf, alpha, threshold_proxy):
 def main():
     parser = argparse.ArgumentParser(description="Infer Lane B ratio from stats + calibration points.")
     parser.add_argument("--stats-json", type=str, required=True, help="output JSON from scripts/lane_b_stats.py")
-    parser.add_argument("--paper-mapping-id", type=str, default="weighted_mean_v1", choices=["paper_v1", "weighted_mean_v1", "corr_only_v1", "entropy_only_v1"], help="mapping used for corr/entropy exponent -> alpha")
-    parser.add_argument("--paper-mapping-notes", type=str, default="", help="free-form notes for the mapping choice")
+    parser.add_argument("--paper-mapping-id", type=str, default="paper_v1", choices=["paper_v1", "weighted_mean_v1", "corr_only_v1", "entropy_only_v1"], help="mapping used for corr/entropy exponent -> alpha (default: paper_v1)")
+    parser.add_argument("--paper-mapping-notes", type=str, default="alpha_data = gamma / (2 * beta) from arXiv:2602.07488", help="free-form notes for the mapping choice")
     parser.add_argument("--corr-weight", type=float, default=1.0, help="weight on corr exponent for weighted_mean_v1")
     parser.add_argument("--entropy-weight", type=float, default=1.0, help="weight on entropy exponent for weighted_mean_v1")
     parser.add_argument("--alpha-override", type=float, default=None, help="optional direct alpha override")
