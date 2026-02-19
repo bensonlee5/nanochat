@@ -19,6 +19,8 @@ echo "Step 2: measuring dataset statistics ..."
   --entropy-min-ctx "$LANE_B_ENT_MIN_CTX" \
   --entropy-max-ctx "$LANE_B_ENT_MAX_CTX" \
   --entropy-num-points "$LANE_B_ENT_NUM_POINTS" \
+  --entropy-min-usable-points "$LANE_B_ENT_MIN_USABLE_POINTS" \
+  --entropy-uniqueness-threshold "$LANE_B_ENT_UNIQUENESS_THRESHOLD" \
   --fit-optuna-seed "$LANE_B_FIT_OPTUNA_SEED" \
   --fit-optuna-trials "$LANE_B_FIT_OPTUNA_TRIALS" \
   --corr-r2-warn-threshold "$LANE_B_CORR_R2_WARN_THRESHOLD" \

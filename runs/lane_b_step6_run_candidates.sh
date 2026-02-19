@@ -42,8 +42,7 @@ PY
 )"; then
   echo "ERROR: inference solve is not usable; skipping candidate runs."
   echo "Recovery options:"
-  echo "  1) Run fallback baseline path: bash runs/lane_b_step6_run_fallback_baseline.sh"
-  echo "  2) Improve stats/calibration settings and rerun from step 2 or step 5"
+  echo "  1) Improve stats/calibration settings and rerun from step 2 or step 5"
   exit 2
 fi
 

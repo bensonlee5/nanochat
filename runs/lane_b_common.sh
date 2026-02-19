@@ -5,6 +5,9 @@
 lane_b_init() {
   set -euo pipefail
 
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
   if [ ! -d ".venv" ]; then
     echo "Missing .venv in repo root. Create it first (e.g. uv venv && uv sync --extra cpu|gpu)."
     exit 1
@@ -16,6 +19,19 @@ lane_b_init() {
   export PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
   export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
   export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
+
+  local speedrun_ratio_default
+  speedrun_ratio_default="$("$PYTHON_BIN" - "$script_dir/speedrun.sh" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8", errors="replace").read()
+match = re.search(r"--target-param-data-ratio=([0-9]*\.?[0-9]+)", text)
+print(match.group(1) if match else "8.25")
+PY
+)"
+  export LANE_B_SPEEDRUN_DEFAULT_RATIO="${LANE_B_SPEEDRUN_DEFAULT_RATIO:-$speedrun_ratio_default}"
 
   export LANE_B_WORK_DIR="${LANE_B_WORK_DIR:-$NANOCHAT_BASE_DIR/lane_b_run}"
   export LANE_B_LOG_DIR="${LANE_B_LOG_DIR:-$LANE_B_WORK_DIR/logs}"
@@ -37,7 +53,7 @@ lane_b_init() {
   export LANE_B_NUM_ITERATIONS="${LANE_B_NUM_ITERATIONS:-1500}"
   export LANE_B_TARGET_METRIC="${LANE_B_TARGET_METRIC:-val_bpb}"
   export LANE_B_TARGET_THRESHOLD="${LANE_B_TARGET_THRESHOLD:-0.85}"
-  export LANE_B_DEFAULT_RATIO="${LANE_B_DEFAULT_RATIO:-10.5}"
+  export LANE_B_DEFAULT_RATIO="${LANE_B_DEFAULT_RATIO:-$LANE_B_SPEEDRUN_DEFAULT_RATIO}"
   export LANE_B_BASELINE_NUM_ITERATIONS="${LANE_B_BASELINE_NUM_ITERATIONS:-1500}"
   export LANE_B_BASELINE_SEEDS="${LANE_B_BASELINE_SEEDS:-41,42,43}"
   export LANE_B_BASELINE_MIN_SUCCESS="${LANE_B_BASELINE_MIN_SUCCESS:-3}"
@@ -46,8 +62,6 @@ lane_b_init() {
   # Lane B metadata defaults
   export LANE_B_DATASET_ID="${LANE_B_DATASET_ID:-fineweb_edu_100b_train}"
   export LANE_B_SCHEMA_PATH="${LANE_B_SCHEMA_PATH:-ideas/lane_b_inference_schema.csv}"
-  export LANE_B_CALIB_ITERS="${LANE_B_CALIB_ITERS:-750,1500,2250}"
-  export LANE_B_CALIB_SEED="${LANE_B_CALIB_SEED:-42}"
   export LANE_B_RUN_SEEDS="${LANE_B_RUN_SEEDS:-41,42}"
   export LANE_B_WANDB_RUN_BASE="${LANE_B_WANDB_RUN_BASE:-dummy}"
 
@@ -60,10 +74,17 @@ lane_b_init() {
   export LANE_B_ENT_MIN_CTX="${LANE_B_ENT_MIN_CTX:-1}"
   export LANE_B_ENT_MAX_CTX="${LANE_B_ENT_MAX_CTX:-64}"
   export LANE_B_ENT_NUM_POINTS="${LANE_B_ENT_NUM_POINTS:-8}"
+  export LANE_B_ENT_MIN_USABLE_POINTS="${LANE_B_ENT_MIN_USABLE_POINTS:-4}"
+  export LANE_B_ENT_UNIQUENESS_THRESHOLD="${LANE_B_ENT_UNIQUENESS_THRESHOLD:-0.9}"
   export LANE_B_FIT_OPTUNA_SEED="${LANE_B_FIT_OPTUNA_SEED:-42}"
   export LANE_B_FIT_OPTUNA_TRIALS="${LANE_B_FIT_OPTUNA_TRIALS:-200}"
   export LANE_B_CORR_R2_WARN_THRESHOLD="${LANE_B_CORR_R2_WARN_THRESHOLD:-0.90}"
   export LANE_B_ENTROPY_R2_WARN_THRESHOLD="${LANE_B_ENTROPY_R2_WARN_THRESHOLD:-0.90}"
+  export LANE_B_ALPHA_FALLBACK_MODE="${LANE_B_ALPHA_FALLBACK_MODE:-baseline_assisted}"
+  export LANE_B_BASELINE_ALPHA_GRID_MIN="${LANE_B_BASELINE_ALPHA_GRID_MIN:-0.1}"
+  export LANE_B_BASELINE_ALPHA_GRID_MAX="${LANE_B_BASELINE_ALPHA_GRID_MAX:-0.8}"
+  export LANE_B_BASELINE_ALPHA_GRID_STEP="${LANE_B_BASELINE_ALPHA_GRID_STEP:-0.01}"
+  export LANE_B_BASELINE_ALPHA_MIN_R2="${LANE_B_BASELINE_ALPHA_MIN_R2:-0.97}"
   export LANE_B_L_INF_LOWER_BOUND_FROM_STATS_KEY="${LANE_B_L_INF_LOWER_BOUND_FROM_STATS_KEY:-entropy_h_inf_bits}"
   export LANE_B_TIME_TO_TARGET_EXTRAPOLATION="${LANE_B_TIME_TO_TARGET_EXTRAPOLATION:-linear_recent_eval}"
   export LANE_B_TIME_TO_TARGET_POWER_LAW_MIN_POINTS="${LANE_B_TIME_TO_TARGET_POWER_LAW_MIN_POINTS:-3}"
@@ -93,6 +114,7 @@ lane_b_init() {
   export LANE_B_BASELINE_RESULTS_CSV="${LANE_B_BASELINE_RESULTS_CSV:-$LANE_B_BASELINE_RESULTS_DIR/results.csv}"
   export LANE_B_BASELINE_THRESHOLD_JSON="${LANE_B_BASELINE_THRESHOLD_JSON:-$LANE_B_BASELINE_WORK_DIR/baseline_threshold.json}"
   export LANE_B_BASELINE_THRESHOLD_ENV="${LANE_B_BASELINE_THRESHOLD_ENV:-$LANE_B_BASELINE_WORK_DIR/baseline_threshold.env}"
+  export LANE_B_BASELINE_LOG_GLOB="${LANE_B_BASELINE_LOG_GLOB:-$LANE_B_BASELINE_RESULTS_DIR/baseline_d*_s*_train.log}"
 }
 
 

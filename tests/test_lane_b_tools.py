@@ -4,6 +4,8 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -15,6 +17,14 @@ def _load_module(relpath, name):
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _write_baseline_log(path, steps, metrics, total_batch_size=16384):
+    lines = [f"Total batch size {total_batch_size:,} => gradient accumulation steps: 1"]
+    for step, metric in zip(steps, metrics):
+        lines.append(f"Step {int(step):05d} | Validation bpb: {float(metric):.6f}")
+    lines.append(f"Minimum validation bpb: {float(min(metrics)):.6f}")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 lane_b_infer_ratio = _load_module("scripts/lane_b_infer_ratio.py", "lane_b_infer_ratio")
@@ -54,6 +64,176 @@ def test_build_context_lengths_is_sorted_and_includes_bounds():
     assert ctx[0] == 1
     assert ctx[-1] == 64
     assert ctx == sorted(ctx)
+
+
+def test_entropy_curve_adaptive_shrinks_window_when_needed():
+    rng = np.random.default_rng(123)
+    tokens = rng.integers(0, 8, size=20000, dtype=np.int64)
+    entropy_curve, skipped_data_starved, points_requested, adaptive_reductions = lane_b_stats.build_entropy_curve_adaptive(
+        tokens=tokens,
+        min_ctx=1,
+        max_ctx=64,
+        num_points=8,
+        min_usable_points=4,
+        uniqueness_threshold=0.9,
+    )
+    assert points_requested >= 4
+    assert len(entropy_curve) >= 4
+    assert adaptive_reductions >= 1
+    assert skipped_data_starved >= 0
+
+
+def test_compute_correlation_curve_matches_naive_reference():
+    tokens = np.asarray([0, 1, 0, 2, 1, 0, 2, 2, 1, 0, 1, 2], dtype=np.int64)
+    min_sep, max_sep = 1, 4
+
+    curve, sum_p_sq = lane_b_stats.compute_correlation_curve(tokens, min_sep, max_sep)
+
+    counts = np.bincount(tokens)
+    probs = counts.astype(np.float64) / tokens.size
+    sum_p_sq_ref = float(np.dot(probs, probs))
+    eps = 1e-12
+    curve_ref = []
+    for sep in range(min_sep, max_sep + 1):
+        n_pairs = tokens.size - sep
+        joint = {}
+        for mu, nu in zip(tokens[:-sep], tokens[sep:]):
+            key = (int(mu), int(nu))
+            joint[key] = joint.get(key, 0) + 1
+
+        sum_pjoint_sq = 0.0
+        cross_term = 0.0
+        for (mu, nu), c in joint.items():
+            p_joint = c / n_pairs
+            sum_pjoint_sq += p_joint * p_joint
+            cross_term += p_joint * probs[mu] * probs[nu]
+        frob_sq = sum_pjoint_sq - 2 * cross_term + sum_p_sq_ref * sum_p_sq_ref
+        curve_ref.append(
+            {
+                "separation": sep,
+                "frobenius_norm": max(math.sqrt(max(frob_sq, 0.0)), eps),
+            }
+        )
+
+    assert abs(sum_p_sq - sum_p_sq_ref) < 1e-15
+    assert len(curve) == len(curve_ref)
+    for got, expected in zip(curve, curve_ref):
+        assert got["separation"] == expected["separation"]
+        assert abs(got["frobenius_norm"] - expected["frobenius_norm"]) < 1e-12
+
+
+def test_infer_alpha_from_baseline_logs_recovers_expected_alpha(tmp_path):
+    steps = np.asarray([100, 200, 400, 800, 1200], dtype=np.int64)
+    total_batch_size = 16384.0
+    tokens = steps.astype(np.float64) * total_batch_size
+    alpha_true = 0.45
+    l_inf = 0.80
+    a1 = 70.0
+    a2 = 71.4
+    metrics_1 = l_inf + a1 * np.power(tokens, -alpha_true)
+    metrics_2 = l_inf + a2 * np.power(tokens, -alpha_true)
+
+    log_1 = tmp_path / "baseline_s41.log"
+    log_2 = tmp_path / "baseline_s42.log"
+    _write_baseline_log(log_1, steps, metrics_1, total_batch_size=int(total_batch_size))
+    _write_baseline_log(log_2, steps, metrics_2, total_batch_size=int(total_batch_size))
+
+    alpha, meta = lane_b_infer_ratio.infer_alpha_from_baseline_logs(
+        log_paths=[str(log_1), str(log_2)],
+        threshold_metric=0.86,
+        metric_direction="lower_is_better",
+        alpha_min=0.2,
+        alpha_max=0.8,
+        alpha_step=0.01,
+        min_median_r2=0.95,
+    )
+    assert abs(alpha - alpha_true) < 0.08
+    assert meta["baseline_alpha_fit_num_seeds"] == 2
+    assert meta["baseline_alpha_fit_median_r2"] > 0.99
+
+
+def test_calibration_points_from_baseline_logs_uses_median_curve(tmp_path):
+    steps = np.asarray([100, 200, 400, 800], dtype=np.int64)
+    total_batch_size = 16384.0
+    tokens = steps.astype(np.float64) * total_batch_size
+    alpha = 0.4
+    l_inf = 0.81
+    a1 = 50.0
+    a2 = 55.0
+    metrics_1 = l_inf + a1 * np.power(tokens, -alpha)
+    metrics_2 = l_inf + a2 * np.power(tokens, -alpha)
+
+    log_1 = tmp_path / "baseline_s41.log"
+    log_2 = tmp_path / "baseline_s42.log"
+    _write_baseline_log(log_1, steps, metrics_1, total_batch_size=int(total_batch_size))
+    _write_baseline_log(log_2, steps, metrics_2, total_batch_size=int(total_batch_size))
+
+    calib_tokens, calib_metrics = lane_b_infer_ratio.calibration_points_from_baseline_logs(
+        [str(log_1), str(log_2)]
+    )
+    assert calib_tokens == sorted(calib_tokens)
+    assert len(calib_tokens) == len(steps)
+    expected_first = float(np.median([metrics_1[0], metrics_2[0]]))
+    assert abs(calib_metrics[0] - expected_first) < 1e-6
+
+
+def test_infer_ratio_baseline_logs_from_results_csv_filters_required_seeds(tmp_path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    for seed in (41, 42, 43, 99):
+        (results_dir / f"baseline_d12_s{seed}_train.log").write_text("ok", encoding="utf-8")
+
+    csv_path = results_dir / "results.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["seed", "experiment_name", "status"])
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"seed": "41", "experiment_name": "baseline_d12_s41", "status": "ok"},
+                {"seed": "42", "experiment_name": "baseline_d12_s42", "status": "ok"},
+                {"seed": "43", "experiment_name": "baseline_d12_s43", "status": "ok"},
+                {"seed": "99", "experiment_name": "baseline_d12_s99", "status": "ok"},
+            ]
+        )
+
+    paths = lane_b_infer_ratio.baseline_logs_from_results_csv(
+        str(csv_path),
+        str(results_dir),
+        required_seeds=[43, 41, 42],
+    )
+    assert [Path(p).name for p in paths] == [
+        "baseline_d12_s43_train.log",
+        "baseline_d12_s41_train.log",
+        "baseline_d12_s42_train.log",
+    ]
+
+
+def test_extract_calibration_results_csv_enforces_required_seeds(tmp_path):
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    for seed in (41, 42):
+        (results_dir / f"baseline_d12_s{seed}_train.log").write_text("ok", encoding="utf-8")
+
+    csv_path = results_dir / "results.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["seed", "experiment_name", "status"])
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"seed": "41", "experiment_name": "baseline_d12_s41", "status": "ok"},
+                {"seed": "42", "experiment_name": "baseline_d12_s42", "status": "ok"},
+            ]
+        )
+
+    try:
+        lane_b_extract_calibration.baseline_log_paths_from_results_csv(
+            str(csv_path),
+            str(results_dir),
+            required_seeds=[41, 42, 43],
+        )
+        assert False, "expected missing required seed to fail"
+    except ValueError as exc:
+        assert "43" in str(exc)
 
 
 def test_infer_ratio_reachable_and_unreachable_paths():
@@ -284,14 +464,6 @@ def test_step1_scaling_script_wires_optional_n_kv_head():
     assert '"${N_KV_HEAD_ARGS[@]}"' in content
 
 
-def test_fallback_script_uses_same_extrapolation_arg_family():
-    content = (ROOT / "runs/lane_b_step6_run_fallback_baseline.sh").read_text(encoding="utf-8")
-    assert "--time-to-target-extrapolation" in content
-    assert "--time-to-target-power-law-alpha" in content
-    assert "--time-to-target-power-law-fit-r2-min" in content
-    assert '"${EXTRAPOLATION_ARGS[@]}"' in content
-
-
 def test_step5_inference_script_has_low_quality_hard_stop_gate():
     content = (ROOT / "runs/lane_b_step5_infer_ratio.sh").read_text(encoding="utf-8")
     assert "LANE_B_ALLOW_LOW_QUALITY_STATS" in content
@@ -299,7 +471,31 @@ def test_step5_inference_script_has_low_quality_hard_stop_gate():
     assert "Stopping step 5 due to stats fit-quality gate." in content
 
 
+def test_step5_inference_script_uses_baseline_calibration_and_alpha_fallback():
+    content = (ROOT / "runs/lane_b_step5_infer_ratio.sh").read_text(encoding="utf-8")
+    assert "--calib-from-baseline-results-csv" in content
+    assert "--calib-from-baseline-results-dir" in content
+    assert "--calib-from-baseline-required-seeds" in content
+    assert "--alpha-fallback-mode" in content
+    assert "--baseline-required-seeds" in content
+
+
+def test_run_all_skips_dedicated_calibration_steps():
+    content = (ROOT / "runs/lane_b_run_all.sh").read_text(encoding="utf-8")
+    assert "lane_b_step3_run_calibration.sh" not in content
+    assert "lane_b_step5_infer_ratio.sh" in content
+
+
 def test_lane_b_common_exposes_new_defaults():
     content = (ROOT / "runs/lane_b_common.sh").read_text(encoding="utf-8")
+    assert 'LANE_B_SPEEDRUN_DEFAULT_RATIO="${LANE_B_SPEEDRUN_DEFAULT_RATIO:-$speedrun_ratio_default}"' in content
     assert 'LANE_B_N_KV_HEAD="${LANE_B_N_KV_HEAD:-}"' in content
     assert 'LANE_B_ALLOW_LOW_QUALITY_STATS="${LANE_B_ALLOW_LOW_QUALITY_STATS:-0}"' in content
+    assert 'LANE_B_ENT_MIN_USABLE_POINTS="${LANE_B_ENT_MIN_USABLE_POINTS:-4}"' in content
+    assert 'LANE_B_ALPHA_FALLBACK_MODE="${LANE_B_ALPHA_FALLBACK_MODE:-baseline_assisted}"' in content
+
+
+def test_baseline_common_uses_speedrun_ratio_default():
+    content = (ROOT / "runs/baseline_common.sh").read_text(encoding="utf-8")
+    assert 'BASELINE_SPEEDRUN_DEFAULT_RATIO="${BASELINE_SPEEDRUN_DEFAULT_RATIO:-$speedrun_ratio_default}"' in content
+    assert 'BASELINE_DEFAULT_RATIO="${BASELINE_DEFAULT_RATIO:-$BASELINE_SPEEDRUN_DEFAULT_RATIO}"' in content

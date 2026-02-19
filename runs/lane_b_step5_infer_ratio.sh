@@ -16,14 +16,13 @@ if [ ! -f "$LANE_B_STATS_JSON" ]; then
   echo "Missing $LANE_B_STATS_JSON. Run step 2 first."
   exit 1
 fi
-if [ ! -f "$LANE_B_CALIB_ENV" ]; then
-  echo "Missing $LANE_B_CALIB_ENV. Run step 4 first."
+if [ ! -f "$LANE_B_BASELINE_RESULTS_CSV" ]; then
+  echo "Missing $LANE_B_BASELINE_RESULTS_CSV."
+  echo "Run baseline step 0 first: bash runs/lane_b_step0_run_true_baselines.sh"
   exit 1
 fi
 
 N_SCALING_PARAMS="$(cat "$LANE_B_SCALING_TXT")"
-# shellcheck disable=SC1090
-source "$LANE_B_CALIB_ENV"
 
 LANE_B_PAPER_MAPPING_ID="${LANE_B_PAPER_MAPPING_ID:-paper_v1}"
 LANE_B_PAPER_MAPPING_NOTES="${LANE_B_PAPER_MAPPING_NOTES:-alpha_data = gamma/(2*beta) from arXiv:2602.07488}"
@@ -33,13 +32,15 @@ LANE_B_CORR_WEIGHT="${LANE_B_CORR_WEIGHT:-1.0}"
 LANE_B_ENTROPY_WEIGHT="${LANE_B_ENTROPY_WEIGHT:-1.0}"
 LANE_B_UNREACHABLE_MULT="${LANE_B_UNREACHABLE_MULT:-10.0}"
 LANE_B_ALLOW_LOW_QUALITY_STATS="${LANE_B_ALLOW_LOW_QUALITY_STATS:-0}"
+LANE_B_ALPHA_FALLBACK_MODE="${LANE_B_ALPHA_FALLBACK_MODE:-baseline_assisted}"
 
-if ! "$PYTHON_BIN" - "$LANE_B_STATS_JSON" "$LANE_B_ALLOW_LOW_QUALITY_STATS" <<'PY'
+if ! "$PYTHON_BIN" - "$LANE_B_STATS_JSON" "$LANE_B_ALLOW_LOW_QUALITY_STATS" "$LANE_B_ALPHA_FALLBACK_MODE" <<'PY'
 import json
 import sys
 
 stats_path = sys.argv[1]
 allow_override = str(sys.argv[2]).strip() == "1"
+alpha_fallback_mode = str(sys.argv[3]).strip()
 stats = json.load(open(stats_path, "r", encoding="utf-8"))
 
 required = [
@@ -63,6 +64,13 @@ ent_low = str(stats.get("entropy_decay_r2_low_quality", "no")).lower() == "yes"
 if allow_override or not (corr_low or ent_low):
     if allow_override and (corr_low or ent_low):
         print("WARNING: Proceeding despite low-quality stats fits because LANE_B_ALLOW_LOW_QUALITY_STATS=1")
+    raise SystemExit(0)
+
+if alpha_fallback_mode == "baseline_assisted":
+    print(
+        "WARNING: stats fit-quality gate failed, but proceeding because "
+        "LANE_B_ALPHA_FALLBACK_MODE=baseline_assisted"
+    )
     raise SystemExit(0)
 
 print("ERROR: Lane B stats fit-quality gate failed.")
@@ -100,14 +108,23 @@ fi
   --entropy-weight "$LANE_B_ENTROPY_WEIGHT" \
   --alpha-min "$LANE_B_ALPHA_MIN" \
   --alpha-max "$LANE_B_ALPHA_MAX" \
-  --calib-tokens "$CALIB_TOKENS" \
-  --calib-metrics "$CALIB_METRICS" \
+  --calib-from-baseline-results-csv "$LANE_B_BASELINE_RESULTS_CSV" \
+  --calib-from-baseline-results-dir "$LANE_B_BASELINE_RESULTS_DIR" \
+  --calib-from-baseline-required-seeds "$LANE_B_BASELINE_SEEDS" \
   --target-metric-threshold "$LANE_B_TARGET_THRESHOLD" \
   --target-metric-direction lower_is_better \
   "${L_INF_ARGS[@]}" \
   --n-scaling-params "$N_SCALING_PARAMS" \
   --default-ratio "$LANE_B_DEFAULT_RATIO" \
   --unreachable-multiplier "$LANE_B_UNREACHABLE_MULT" \
+  --alpha-fallback-mode "$LANE_B_ALPHA_FALLBACK_MODE" \
+  --baseline-results-csv "$LANE_B_BASELINE_RESULTS_CSV" \
+  --baseline-results-dir "$LANE_B_BASELINE_RESULTS_DIR" \
+  --baseline-required-seeds "$LANE_B_BASELINE_SEEDS" \
+  --baseline-alpha-grid-min "$LANE_B_BASELINE_ALPHA_GRID_MIN" \
+  --baseline-alpha-grid-max "$LANE_B_BASELINE_ALPHA_GRID_MAX" \
+  --baseline-alpha-grid-step "$LANE_B_BASELINE_ALPHA_GRID_STEP" \
+  --baseline-alpha-min-r2 "$LANE_B_BASELINE_ALPHA_MIN_R2" \
   --output-json "$LANE_B_INFER_JSON"
 
 "$PYTHON_BIN" - "$LANE_B_INFER_JSON" <<'PY'
@@ -117,6 +134,7 @@ import sys
 path = sys.argv[1]
 d = json.load(open(path, "r", encoding="utf-8"))
 print(f"inferred_data_scaling_exponent={d.get('inferred_data_scaling_exponent')}")
+print(f"alpha_source={d.get('alpha_source')}")
 print(f"inferred_target_tokens={d.get('inferred_target_tokens')}")
 print(f"inferred_target_param_data_ratio={d.get('inferred_target_param_data_ratio')}")
 print(f"confirmation_ratio={d.get('confirmation_ratio')}")

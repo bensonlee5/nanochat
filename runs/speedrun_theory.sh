@@ -37,7 +37,18 @@ TOTAL_BATCH_SIZE="${TOTAL_BATCH_SIZE:--1}"
 NUM_ITERATIONS="${NUM_ITERATIONS:--1}"
 EVAL_EVERY="${EVAL_EVERY:-250}"
 EVAL_TOKENS="${EVAL_TOKENS:-20971520}"
-TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-10.5}"
+SPEEDRUN_SPEC_RATIO="$(
+python - "$SCRIPT_DIR/speedrun.sh" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8", errors="replace").read()
+match = re.search(r"--target-param-data-ratio=([0-9]*\.?[0-9]+)", text)
+print(match.group(1) if match else "8.25")
+PY
+)"
+TARGET_PARAM_DATA_RATIO="${TARGET_PARAM_DATA_RATIO:-$SPEEDRUN_SPEC_RATIO}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.0}"
 WARMDOWN_RATIO="${WARMDOWN_RATIO:-0.5}"
 WARMDOWN_SHAPE="${WARMDOWN_SHAPE:-linear}"

@@ -9,13 +9,14 @@ import argparse
 import json
 import math
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import numpy as np  # noqa: E402
 import optuna  # noqa: E402
+import powerlaw  # noqa: E402
 
 MASK64 = (1 << 64) - 1
 HASH_BASE = 11400714819323198485  # odd 64-bit constant
@@ -41,24 +42,73 @@ def _sanitize_power_law_inputs(xs, ys, min_points):
     return xs, ys
 
 
+def _power_law_basis(xs, exponent, xmin=None, xmax=None):
+    xs = np.asarray(xs, dtype=np.float64)
+    if xs.size == 0:
+        raise ValueError("xs must be non-empty")
+    if xmin is None:
+        xmin = float(np.min(xs))
+    if xmax is None:
+        xmax = float(np.max(xs))
+    if xmax <= xmin:
+        xmax = xmin * (1.0 + 1e-9)
+
+    model = powerlaw.Power_Law(
+        xmin=float(xmin),
+        xmax=float(xmax),
+        discrete=False,
+        parameters=[float(exponent)],
+        fit_method="Likelihood",
+    )
+    basis = np.asarray(model.pdf(xs), dtype=np.float64)
+    if (not np.all(np.isfinite(basis))) or np.any(basis <= 0):
+        raise ValueError("Non-finite or non-positive power-law basis values")
+    return basis
+
+
 def fit_power_law_simple(xs, ys, optuna_seed=42, optuna_trials=200):
-    """Fit y = a * x^{-exponent} using linear regression on log-log data."""
+    """Fit y = a * x^{-exponent} using powerlaw package basis + Optuna."""
     if int(optuna_trials) < 1:
         raise ValueError("optuna_trials must be >= 1")
     xs, ys = _sanitize_power_law_inputs(xs, ys, min_points=2)
+    xmin = float(np.min(xs))
+    xmax = float(np.max(xs))
 
-    log_x = np.log(xs)
-    log_y = np.log(ys)
+    def objective(trial):
+        exponent = trial.suggest_float("exponent", 1e-3, 6.0)
+        try:
+            basis = _power_law_basis(xs, exponent, xmin=xmin, xmax=xmax)
+        except ValueError:
+            return float("inf")
 
-    # Linear regression: log_y = -exponent * log_x + log_a
-    slope, intercept = np.polyfit(log_x, log_y, 1)
-    if not np.isfinite(slope) or not np.isfinite(intercept):
-        raise ValueError("Non-finite linear fit parameters in fit_power_law_simple")
-    exponent = -slope
-    a = np.exp(intercept)
+        denom = float(np.dot(basis, basis))
+        if denom <= 0:
+            return float("inf")
+        a = float(np.dot(basis, ys) / denom)
+        if (not np.isfinite(a)) or a <= 0:
+            return float("inf")
 
-    # Calculate R2
-    y_pred = a * np.power(xs, -exponent)
+        y_pred = a * basis
+        mse = float(np.mean((ys - y_pred) ** 2))
+        return mse if np.isfinite(mse) else float("inf")
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler = optuna.samplers.TPESampler(seed=int(optuna_seed))
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=int(optuna_trials), n_jobs=1, show_progress_bar=False)
+    if (study.best_params is None) or (not np.isfinite(study.best_value)):
+        raise ValueError("Power-law fit failed to find finite parameters")
+
+    exponent = float(study.best_params["exponent"])
+    basis = _power_law_basis(xs, exponent, xmin=xmin, xmax=xmax)
+    denom = float(np.dot(basis, basis))
+    if denom <= 0:
+        raise ValueError("Degenerate basis in fit_power_law_simple")
+    a = float(np.dot(basis, ys) / denom)
+    if (not np.isfinite(a)) or a <= 0:
+        raise ValueError("Non-finite or non-positive amplitude in fit_power_law_simple")
+
+    y_pred = a * basis
     ss_res = np.sum((ys - y_pred) ** 2)
     ss_tot = np.sum((ys - np.mean(ys)) ** 2)
     r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
@@ -94,26 +144,31 @@ def fit_shifted_power_law(xs, ys, optuna_seed=42, optuna_trials=200):
         # If the asymptote range collapses, use the simpler model.
         return simple_a, simple_gamma, 0.0, simple_r2
 
-    log_x = np.log(xs)
+    xmin = float(np.min(xs))
+    xmax = float(np.max(xs))
 
     def objective(trial):
         b = trial.suggest_float("b", 0.0, b_upper)
+        gamma = trial.suggest_float("gamma", 1e-3, 6.0)
 
         y_shifted = ys - b
         if np.any(y_shifted <= 0):
             return float("inf")
 
-        # Fit simple power law to shifted data: y - b = A * x^-gamma
-        log_y_shifted = np.log(y_shifted)
-        slope, intercept = np.polyfit(log_x, log_y_shifted, 1)
-        if not np.isfinite(slope) or not np.isfinite(intercept):
+        try:
+            basis = _power_law_basis(xs, gamma, xmin=xmin, xmax=xmax)
+        except ValueError:
             return float("inf")
 
-        # We want to minimize the squared error of the linear fit in log-log space
-        # This roughly corresponds to maximizing the likelihood of the power law
-        y_fit_log = slope * log_x + intercept
-        residual = log_y_shifted - y_fit_log
-        mse = np.mean(residual ** 2)
+        denom = float(np.dot(basis, basis))
+        if denom <= 0:
+            return float("inf")
+        a = float(np.dot(basis, y_shifted) / denom)
+        if (not np.isfinite(a)) or a <= 0:
+            return float("inf")
+
+        y_pred = a * basis + b
+        mse = float(np.mean((ys - y_pred) ** 2))
         return float(mse) if np.isfinite(mse) else float("inf")
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -124,24 +179,29 @@ def fit_shifted_power_law(xs, ys, optuna_seed=42, optuna_trials=200):
         return simple_a, simple_gamma, 0.0, simple_r2
 
     best_b = float(study.best_params.get("b", 0.0))
+    best_gamma = float(study.best_params.get("gamma", simple_gamma))
     if not (0.0 <= best_b < min_y):
         return simple_a, simple_gamma, 0.0, simple_r2
 
-    # Re-compute parameters with best B
+    # Re-compute parameters with best B and gamma
     y_shifted = ys - best_b
     if np.any(y_shifted <= 0):
         return simple_a, simple_gamma, 0.0, simple_r2
-    log_x = np.log(xs)
-    log_y_shifted = np.log(y_shifted)
-    slope, intercept = np.polyfit(log_x, log_y_shifted, 1)
-    if not np.isfinite(slope) or not np.isfinite(intercept):
+    try:
+        basis = _power_law_basis(xs, best_gamma, xmin=xmin, xmax=xmax)
+    except ValueError:
         return simple_a, simple_gamma, 0.0, simple_r2
 
-    gamma = -slope
-    a = np.exp(intercept)
+    denom = float(np.dot(basis, basis))
+    if denom <= 0:
+        return simple_a, simple_gamma, 0.0, simple_r2
+    gamma = best_gamma
+    a = float(np.dot(basis, y_shifted) / denom)
+    if not np.isfinite(a):
+        return simple_a, simple_gamma, 0.0, simple_r2
 
     # Calculate R2 on the original scale
-    y_pred = a * np.power(xs, -gamma) + best_b
+    y_pred = a * basis + best_b
     ss_res = np.sum((ys - y_pred) ** 2)
     ss_tot = np.sum((ys - np.mean(ys)) ** 2)
     r2 = 1.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
@@ -222,23 +282,33 @@ def compute_correlation_curve(tokens, min_sep, max_sep):
     counts = np.bincount(tokens)
     probs = counts.astype(np.float64) / tokens.size
     # sum P(mu)^2 — used for the Frobenius norm correction term
-    sum_p_sq = float(np.sum(probs * probs))
+    sum_p_sq = float(np.dot(probs, probs))
+    vocab_size = int(counts.size)
+    max_pair_id = (vocab_size * vocab_size) - 1
+    pair_key_dtype = np.uint32 if max_pair_id <= np.iinfo(np.uint32).max else np.uint64
+    pair_vocab_mult = pair_key_dtype(vocab_size)
+    pair_tokens = tokens.astype(pair_key_dtype, copy=False)
     eps = 1e-12
 
     curve = []
     for sep in range(min_sep, max_sep + 1):
         n_pairs = tokens.size - sep
-        # Accumulate sparse joint counts count(mu, nu) for lag=sep
-        joint = Counter(zip(tokens[:-sep].tolist(), tokens[sep:].tolist()))
+        left = tokens[:-sep]
+        right = tokens[sep:]
+
+        # Encode token pairs into scalar keys and count each distinct pair in vectorized NumPy code.
+        pair_ids = pair_tokens[:-sep] * pair_vocab_mult + pair_tokens[sep:]
+        _, pair_counts = np.unique(pair_ids, return_counts=True)
+        pair_counts = pair_counts.astype(np.float64, copy=False)
+        n_pairs_f = float(n_pairs)
+        sum_pjoint_sq = float(np.dot(pair_counts, pair_counts) / (n_pairs_f * n_pairs_f))
+
+        # cross_term = E_{(mu,nu)~P(mu,nu|n)}[P(mu)P(nu)]
+        cross_term = float(np.mean(probs[left] * probs[right]))
+
         # ||C(n)||_F^2 = sum_{mu,nu} [P(mu,nu|n) - P(mu)*P(nu)]^2
         # Expand: sum P(mu,nu)^2 - 2*sum P(mu,nu)*P(mu)*P(nu) + sum P(mu)^2 * sum P(nu)^2
         # The last term = sum_p_sq^2 (marginals are the same distribution)
-        sum_pjoint_sq = 0.0
-        cross_term = 0.0
-        for (mu, nu), c in joint.items():
-            p_joint = c / n_pairs
-            sum_pjoint_sq += p_joint * p_joint
-            cross_term += p_joint * probs[mu] * probs[nu]
         frob_sq = sum_pjoint_sq - 2 * cross_term + sum_p_sq * sum_p_sq
         frob_norm = max(math.sqrt(max(frob_sq, 0.0)), eps)
         curve.append(
@@ -306,6 +376,84 @@ def conditional_entropy_bits(tokens, context_len, uniqueness_threshold=0.9):
     return float(entropy_bits), num_unique, is_data_starved
 
 
+def build_entropy_curve(tokens, context_lengths, uniqueness_threshold):
+    entropy_curve = []
+    skipped_data_starved = 0
+    for ctx_len in context_lengths:
+        if ctx_len >= tokens.size - 1:
+            continue
+        h_bits, unique_ctx, is_data_starved = conditional_entropy_bits(
+            tokens,
+            ctx_len,
+            uniqueness_threshold=uniqueness_threshold,
+        )
+        if is_data_starved:
+            skipped_data_starved += 1
+            continue
+        entropy_curve.append(
+            {
+                "context_len": ctx_len,
+                "conditional_entropy_bits": h_bits,
+                "unique_context_hashes": unique_ctx,
+            }
+        )
+    return entropy_curve, skipped_data_starved
+
+
+def build_entropy_curve_adaptive(
+    tokens,
+    min_ctx,
+    max_ctx,
+    num_points,
+    min_usable_points,
+    uniqueness_threshold,
+):
+    if min_usable_points < 2:
+        raise ValueError("--entropy-min-usable-points must be >= 2")
+
+    requested_lengths = build_context_lengths(min_ctx, max_ctx, num_points)
+    requested_points = len(requested_lengths)
+
+    effective_max_ctx = int(max_ctx)
+    adaptive_reductions = 0
+    last_entropy_curve = []
+    last_skipped = 0
+
+    while True:
+        context_lengths = build_context_lengths(min_ctx, effective_max_ctx, num_points)
+        entropy_curve, skipped_data_starved = build_entropy_curve(
+            tokens=tokens,
+            context_lengths=context_lengths,
+            uniqueness_threshold=uniqueness_threshold,
+        )
+        last_entropy_curve = entropy_curve
+        last_skipped = skipped_data_starved
+
+        if len(entropy_curve) >= min_usable_points:
+            return entropy_curve, skipped_data_starved, requested_points, adaptive_reductions
+
+        if effective_max_ctx <= min_ctx:
+            break
+        next_max_ctx = max(min_ctx, effective_max_ctx // 2)
+        if next_max_ctx >= effective_max_ctx:
+            next_max_ctx = effective_max_ctx - 1
+        if next_max_ctx < min_ctx:
+            next_max_ctx = min_ctx
+        if next_max_ctx == effective_max_ctx:
+            break
+
+        adaptive_reductions += 1
+        effective_max_ctx = next_max_ctx
+
+    raise ValueError(
+        "Need at least "
+        f"{min_usable_points} usable entropy points after adaptive context-window shrink; "
+        f"only found {len(last_entropy_curve)} "
+        f"(min_ctx={min_ctx}, max_ctx={max_ctx}, skipped_data_starved={last_skipped}). "
+        "Increase --max-tokens or relax --entropy-uniqueness-threshold."
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Estimate Lane B dataset decay statistics.")
     parser.add_argument("--split", type=str, default="train", choices=["train", "val"], help="dataset split")
@@ -319,12 +467,19 @@ def main():
     parser.add_argument("--entropy-min-ctx", type=int, default=1, help="minimum context length for entropy-gap fit")
     parser.add_argument("--entropy-max-ctx", type=int, default=64, help="maximum context length for entropy-gap fit")
     parser.add_argument("--entropy-num-points", type=int, default=8, help="number of log-spaced context lengths")
+    parser.add_argument("--entropy-min-usable-points", type=int, default=4, help="minimum non-starved entropy points required after adaptive context-window shrink")
+    parser.add_argument("--entropy-uniqueness-threshold", type=float, default=0.9, help="data-starvation threshold: skip a context length when singleton-context ratio exceeds this value")
     parser.add_argument("--fit-optuna-seed", type=int, default=42, help="fixed Optuna sampler seed for deterministic power-law fits")
     parser.add_argument("--fit-optuna-trials", type=int, default=200, help="Optuna trial count per power-law fit")
     parser.add_argument("--corr-r2-warn-threshold", type=float, default=0.90, help="warn when corr power-law fit R^2 falls below this value")
     parser.add_argument("--entropy-r2-warn-threshold", type=float, default=0.90, help="warn when entropy power-law fit R^2 falls below this value")
     parser.add_argument("--output-json", type=str, required=True, help="path to output JSON")
     args = parser.parse_args()
+
+    if args.entropy_min_usable_points < 2:
+        raise ValueError("--entropy-min-usable-points must be >= 2")
+    if not 0.0 < args.entropy_uniqueness_threshold < 1.0:
+        raise ValueError("--entropy-uniqueness-threshold must be in (0, 1)")
 
     max_docs = args.max_docs
     max_tokens = args.max_tokens
@@ -357,27 +512,26 @@ def main():
         optuna_trials=args.fit_optuna_trials,
     )
 
-    context_lengths = build_context_lengths(args.entropy_min_ctx, args.entropy_max_ctx, args.entropy_num_points)
-    entropy_curve = []
-    skipped_data_starved = 0
-    for ctx_len in context_lengths:
-        if ctx_len >= tokens.size - 1:
-            continue
-        h_bits, unique_ctx, is_data_starved = conditional_entropy_bits(tokens, ctx_len)
-        if is_data_starved:
-            skipped_data_starved += 1
-            continue
-        entropy_curve.append(
-            {
-                "context_len": ctx_len,
-                "conditional_entropy_bits": h_bits,
-                "unique_context_hashes": unique_ctx,
-            }
-        )
+    entropy_curve, skipped_data_starved, entropy_points_requested, entropy_fit_adaptive_reductions = build_entropy_curve_adaptive(
+        tokens=tokens,
+        min_ctx=args.entropy_min_ctx,
+        max_ctx=args.entropy_max_ctx,
+        num_points=args.entropy_num_points,
+        min_usable_points=args.entropy_min_usable_points,
+        uniqueness_threshold=args.entropy_uniqueness_threshold,
+    )
     if skipped_data_starved > 0:
-        print(f"Skipped {skipped_data_starved} context length(s) due to data starvation (>90% unique contexts)")
-    if len(entropy_curve) < 2:
-        raise ValueError("Need at least two entropy points; increase token sample or reduce context window")
+        print(
+            "Skipped "
+            f"{skipped_data_starved} context length(s) due to data starvation "
+            f"(singleton-context ratio > {args.entropy_uniqueness_threshold:.2f})."
+        )
+    if entropy_fit_adaptive_reductions > 0:
+        print(
+            "Adaptive entropy fit reduced context window "
+            f"{entropy_fit_adaptive_reductions} time(s) to reach "
+            f"{len(entropy_curve)} usable point(s)."
+        )
 
     # For entropy, we fit y = A * x^-gamma + B (where B is H_inf)
     ent_x = [x["context_len"] for x in entropy_curve]
@@ -429,6 +583,11 @@ def main():
         "corr_decay_r2_low_quality": "yes" if corr_r2_low_quality else "no",
         "entropy_fit_min_ctx": int(args.entropy_min_ctx),
         "entropy_fit_max_ctx": int(args.entropy_max_ctx),
+        "entropy_num_points_requested": int(entropy_points_requested),
+        "entropy_num_points_used": int(len(entropy_curve)),
+        "entropy_fit_adaptive_reductions": int(entropy_fit_adaptive_reductions),
+        "entropy_min_usable_points": int(args.entropy_min_usable_points),
+        "entropy_uniqueness_threshold": float(args.entropy_uniqueness_threshold),
         "entropy_decay_exponent": float(ent_exp),
         "entropy_decay_r2": float(ent_r2),
         "entropy_decay_r2_warn_threshold": float(args.entropy_r2_warn_threshold),
