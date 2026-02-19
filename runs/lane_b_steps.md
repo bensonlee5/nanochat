@@ -77,7 +77,7 @@ Output:
 ## 5) Infer Lane B ratio
 
 ```bash
-bash runs/lane_b_step5_infer_ratio.sh
+bash runs/lane_b_step3_infer_ratio.sh
 ```
 
 Output:
@@ -89,19 +89,19 @@ Note:
 ## 6) Run inferred + confirmation candidates
 
 ```bash
-bash runs/lane_b_step6_run_candidates.sh
+bash runs/lane_b_step4_run_candidates.sh
 ```
 
 Outputs:
 - candidate logs in `$LANE_B_WORK_DIR/logs/laneb_<mode>_s<seed>.log`
 - manifest: `$LANE_B_WORK_DIR/candidate_runs.csv`
 
-If Step 5 produced `solve_status != ok`, improve stats/calibration settings and rerun from Step 4 or Step 5.
+If Step 3 produced `solve_status != ok`, improve stats/calibration settings and rerun from Step 2 or Step 3.
 
 ## 7) Append candidate rows to Lane B schema CSV
 
 ```bash
-bash runs/lane_b_step7_log_candidates.sh
+bash runs/lane_b_step5_log_candidates.sh
 ```
 
 Output:
@@ -113,7 +113,7 @@ Note:
 ## 8) Summarize inferred vs confirmation
 
 ```bash
-bash runs/lane_b_step8_summary.sh
+bash runs/lane_b_step6_summary.sh
 ```
 
 This prints per-seed winner and a recommended `lane_b_decision`.
@@ -129,7 +129,7 @@ Behavior note:
 - for a lane-agnostic baseline workflow, use `runs/baseline_steps.md`.
 - `runs/lane_b_run_all.sh` loads `LANE_B_BASELINE_THRESHOLD_ENV` automatically when present.
 - `runs/lane_b_run_all.sh` does not execute step 0 baselining for you.
-- `runs/lane_b_run_all.sh` stops after Step 5 when inference is unsolved and prints rerun guidance.
+- `runs/lane_b_run_all.sh` stops after Step 3 when inference is unsolved and prints rerun guidance.
 - lane B currently supports only `LANE_B_TARGET_METRIC=val_bpb` (scripts fail fast on other values).
 
 ## Useful knobs

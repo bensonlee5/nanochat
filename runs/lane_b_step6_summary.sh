@@ -6,14 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lane_b_common.sh"
 lane_b_init
 
-echo "Step 8: summarizing Lane B manifest runs ..."
+echo "Step 6: summarizing Lane B manifest runs ..."
 
 if [ ! -f "$LANE_B_MANIFEST_CSV" ]; then
-  echo "Missing $LANE_B_MANIFEST_CSV. Run step 6 first."
+  echo "Missing $LANE_B_MANIFEST_CSV. Run step 4 first."
   exit 1
 fi
 if [ ! -f "$LANE_B_SCHEMA_PATH" ]; then
-  echo "Missing $LANE_B_SCHEMA_PATH. Run step 7 first."
+  echo "Missing $LANE_B_SCHEMA_PATH. Run step 5 first."
   exit 1
 fi
 

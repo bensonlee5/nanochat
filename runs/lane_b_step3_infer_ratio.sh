@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lane_b_common.sh"
 lane_b_init
 
-echo "Step 5: inferring target ratio from stats + calibration ..."
+echo "Step 3: inferring target ratio from stats + calibration ..."
 
 if [ ! -f "$LANE_B_SCALING_TXT" ]; then
   echo "Missing $LANE_B_SCALING_TXT. Run step 1 first."
@@ -89,7 +89,7 @@ print("  3) Override gate with LANE_B_ALLOW_LOW_QUALITY_STATS=1")
 raise SystemExit(2)
 PY
 then
-  echo "Stopping step 5 due to stats fit-quality gate."
+  echo "Stopping step 3 due to stats fit-quality gate."
   exit 2
 fi
 

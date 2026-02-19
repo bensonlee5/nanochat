@@ -1,0 +1,315 @@
+{
+  "corr_curve": [
+    {
+      "frobenius_norm": 0.011001298055581199,
+      "separation": 1
+    },
+    {
+      "frobenius_norm": 0.006625310627060539,
+      "separation": 2
+    },
+    {
+      "frobenius_norm": 0.003530384450338352,
+      "separation": 3
+    },
+    {
+      "frobenius_norm": 0.0026001749254778222,
+      "separation": 4
+    },
+    {
+      "frobenius_norm": 0.002082477532686833,
+      "separation": 5
+    },
+    {
+      "frobenius_norm": 0.002026771413033067,
+      "separation": 6
+    },
+    {
+      "frobenius_norm": 0.0018952596034558502,
+      "separation": 7
+    },
+    {
+      "frobenius_norm": 0.001845427002903533,
+      "separation": 8
+    },
+    {
+      "frobenius_norm": 0.0017749347659519956,
+      "separation": 9
+    },
+    {
+      "frobenius_norm": 0.001757340864122489,
+      "separation": 10
+    },
+    {
+      "frobenius_norm": 0.0017357005990095767,
+      "separation": 11
+    },
+    {
+      "frobenius_norm": 0.0017081530162351287,
+      "separation": 12
+    },
+    {
+      "frobenius_norm": 0.0016916556080461829,
+      "separation": 13
+    },
+    {
+      "frobenius_norm": 0.0016726582479097726,
+      "separation": 14
+    },
+    {
+      "frobenius_norm": 0.001701005690053211,
+      "separation": 15
+    },
+    {
+      "frobenius_norm": 0.0016445664666852801,
+      "separation": 16
+    },
+    {
+      "frobenius_norm": 0.0016689113812205748,
+      "separation": 17
+    },
+    {
+      "frobenius_norm": 0.0016858237076732632,
+      "separation": 18
+    },
+    {
+      "frobenius_norm": 0.0016730462750440406,
+      "separation": 19
+    },
+    {
+      "frobenius_norm": 0.001648323732798336,
+      "separation": 20
+    },
+    {
+      "frobenius_norm": 0.001626231028957497,
+      "separation": 21
+    },
+    {
+      "frobenius_norm": 0.001616302290450554,
+      "separation": 22
+    },
+    {
+      "frobenius_norm": 0.0016125100139582173,
+      "separation": 23
+    },
+    {
+      "frobenius_norm": 0.001619537076157198,
+      "separation": 24
+    },
+    {
+      "frobenius_norm": 0.0015832316428998812,
+      "separation": 25
+    },
+    {
+      "frobenius_norm": 0.0015800960364065523,
+      "separation": 26
+    },
+    {
+      "frobenius_norm": 0.0015857261292406008,
+      "separation": 27
+    },
+    {
+      "frobenius_norm": 0.0016167917594725007,
+      "separation": 28
+    },
+    {
+      "frobenius_norm": 0.0015977411576180412,
+      "separation": 29
+    },
+    {
+      "frobenius_norm": 0.0015849737473777059,
+      "separation": 30
+    },
+    {
+      "frobenius_norm": 0.0015678872742277352,
+      "separation": 31
+    },
+    {
+      "frobenius_norm": 0.0015820910415070008,
+      "separation": 32
+    },
+    {
+      "frobenius_norm": 0.001607048759047748,
+      "separation": 33
+    },
+    {
+      "frobenius_norm": 0.001566088115785554,
+      "separation": 34
+    },
+    {
+      "frobenius_norm": 0.0015673415843200514,
+      "separation": 35
+    },
+    {
+      "frobenius_norm": 0.0016122129583799195,
+      "separation": 36
+    },
+    {
+      "frobenius_norm": 0.0015975870117149878,
+      "separation": 37
+    },
+    {
+      "frobenius_norm": 0.0015578836580282416,
+      "separation": 38
+    },
+    {
+      "frobenius_norm": 0.001572515350712006,
+      "separation": 39
+    },
+    {
+      "frobenius_norm": 0.0015705355395103583,
+      "separation": 40
+    },
+    {
+      "frobenius_norm": 0.0015725012281145782,
+      "separation": 41
+    },
+    {
+      "frobenius_norm": 0.001568440114675518,
+      "separation": 42
+    },
+    {
+      "frobenius_norm": 0.001548215001241176,
+      "separation": 43
+    },
+    {
+      "frobenius_norm": 0.0015586959760985422,
+      "separation": 44
+    },
+    {
+      "frobenius_norm": 0.0015293816313908032,
+      "separation": 45
+    },
+    {
+      "frobenius_norm": 0.0015526311535840004,
+      "separation": 46
+    },
+    {
+      "frobenius_norm": 0.0015354795147511466,
+      "separation": 47
+    },
+    {
+      "frobenius_norm": 0.001572205148445547,
+      "separation": 48
+    },
+    {
+      "frobenius_norm": 0.0015464077636274376,
+      "separation": 49
+    },
+    {
+      "frobenius_norm": 0.0015861754687097826,
+      "separation": 50
+    },
+    {
+      "frobenius_norm": 0.0015323087845166364,
+      "separation": 51
+    },
+    {
+      "frobenius_norm": 0.0015366407628103563,
+      "separation": 52
+    },
+    {
+      "frobenius_norm": 0.001566305550761721,
+      "separation": 53
+    },
+    {
+      "frobenius_norm": 0.0015706095464114126,
+      "separation": 54
+    },
+    {
+      "frobenius_norm": 0.001563668749342492,
+      "separation": 55
+    },
+    {
+      "frobenius_norm": 0.001559005406441996,
+      "separation": 56
+    },
+    {
+      "frobenius_norm": 0.001531278316622665,
+      "separation": 57
+    },
+    {
+      "frobenius_norm": 0.0015791131738577715,
+      "separation": 58
+    },
+    {
+      "frobenius_norm": 0.0015448553143044942,
+      "separation": 59
+    },
+    {
+      "frobenius_norm": 0.0015508844401370655,
+      "separation": 60
+    },
+    {
+      "frobenius_norm": 0.0015464589196011668,
+      "separation": 61
+    },
+    {
+      "frobenius_norm": 0.0015798358561344948,
+      "separation": 62
+    },
+    {
+      "frobenius_norm": 0.0015166169142812348,
+      "separation": 63
+    },
+    {
+      "frobenius_norm": 0.0015514990608066009,
+      "separation": 64
+    }
+  ],
+  "corr_decay_exponent": 0.552000051756984,
+  "corr_decay_r2": 0.7667098020609417,
+  "corr_decay_r2_low_quality": "yes",
+  "corr_decay_r2_warn_threshold": 0.9,
+  "corr_fit_max_sep": 64,
+  "corr_fit_min_sep": 1,
+  "dataset_id": "fineweb_edu_100b_train",
+  "entropy_curve": [
+    {
+      "conditional_entropy_bits": 5.6772958013686825,
+      "context_len": 1,
+      "entropy_gap_bits": 5.6772958013686825,
+      "unique_context_hashes": 25647
+    },
+    {
+      "conditional_entropy_bits": 1.7711710000906604,
+      "context_len": 2,
+      "entropy_gap_bits": 1.7711710000906604,
+      "unique_context_hashes": 245800
+    },
+    {
+      "conditional_entropy_bits": 0.36095225565815264,
+      "context_len": 3,
+      "entropy_gap_bits": 0.36095225565815264,
+      "unique_context_hashes": 417038
+    },
+    {
+      "conditional_entropy_bits": 0.08800996302348185,
+      "context_len": 4,
+      "entropy_gap_bits": 0.08800996302348185,
+      "unique_context_hashes": 471339
+    }
+  ],
+  "entropy_decay_exponent": 1.993220098534896,
+  "entropy_decay_r2": 0.9866369431741867,
+  "entropy_decay_r2_low_quality": "no",
+  "entropy_decay_r2_warn_threshold": 0.9,
+  "entropy_fit_adaptive_reductions": 1,
+  "entropy_fit_max_ctx": 64,
+  "entropy_fit_min_ctx": 1,
+  "entropy_h_inf_bits": 0.0,
+  "entropy_min_usable_points": 4,
+  "entropy_num_points_requested": 8,
+  "entropy_num_points_used": 4,
+  "entropy_skipped_data_starved": 4,
+  "entropy_uniqueness_threshold": 0.98,
+  "fit_optuna_seed": 42,
+  "fit_optuna_trials": 200,
+  "num_docs_sampled": 598,
+  "num_tokens_sampled": 500000,
+  "split": "train",
+  "timestamp_utc": "2026-02-19T04:27:31Z",
+  "token_unigram_collision_prob": 0.006543445343999983,
+  "tokenizer_id": "default",
+  "vocab_size": 32768
+}

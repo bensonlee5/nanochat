@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lane_b_common.sh"
 lane_b_init
 
-echo "Step 6: running inferred + confirmation candidates ..."
+echo "Step 4: running inferred + confirmation candidates ..."
 
 if [ ! -f "$LANE_B_INFER_JSON" ]; then
-  echo "Missing $LANE_B_INFER_JSON. Run step 5 first."
+  echo "Missing $LANE_B_INFER_JSON. Run step 3 first."
   exit 1
 fi
 
@@ -42,7 +42,7 @@ PY
 )"; then
   echo "ERROR: inference solve is not usable; skipping candidate runs."
   echo "Recovery options:"
-  echo "  1) Improve stats/calibration settings and rerun from step 2 or step 5"
+  echo "  1) Improve stats/calibration settings and rerun from step 2 or step 3"
   exit 2
 fi
 

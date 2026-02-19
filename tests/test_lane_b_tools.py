@@ -464,15 +464,15 @@ def test_step1_scaling_script_wires_optional_n_kv_head():
     assert '"${N_KV_HEAD_ARGS[@]}"' in content
 
 
-def test_step5_inference_script_has_low_quality_hard_stop_gate():
-    content = (ROOT / "runs/lane_b_step5_infer_ratio.sh").read_text(encoding="utf-8")
+def test_step3_inference_script_has_low_quality_hard_stop_gate():
+    content = (ROOT / "runs/lane_b_step3_infer_ratio.sh").read_text(encoding="utf-8")
     assert "LANE_B_ALLOW_LOW_QUALITY_STATS" in content
     assert "Lane B stats fit-quality gate failed." in content
-    assert "Stopping step 5 due to stats fit-quality gate." in content
+    assert "Stopping step 3 due to stats fit-quality gate." in content
 
 
-def test_step5_inference_script_uses_baseline_calibration_and_alpha_fallback():
-    content = (ROOT / "runs/lane_b_step5_infer_ratio.sh").read_text(encoding="utf-8")
+def test_step3_inference_script_uses_baseline_calibration_and_alpha_fallback():
+    content = (ROOT / "runs/lane_b_step3_infer_ratio.sh").read_text(encoding="utf-8")
     assert "--calib-from-baseline-results-csv" in content
     assert "--calib-from-baseline-results-dir" in content
     assert "--calib-from-baseline-required-seeds" in content
@@ -480,10 +480,12 @@ def test_step5_inference_script_uses_baseline_calibration_and_alpha_fallback():
     assert "--baseline-required-seeds" in content
 
 
-def test_run_all_skips_dedicated_calibration_steps():
+def test_run_all_references_renumbered_steps():
     content = (ROOT / "runs/lane_b_run_all.sh").read_text(encoding="utf-8")
-    assert "lane_b_step3_run_calibration.sh" not in content
-    assert "lane_b_step5_infer_ratio.sh" in content
+    assert "lane_b_step3_infer_ratio.sh" in content
+    assert "lane_b_step4_run_candidates.sh" in content
+    assert "lane_b_step5_log_candidates.sh" in content
+    assert "lane_b_step6_summary.sh" in content
 
 
 def test_lane_b_common_exposes_new_defaults():

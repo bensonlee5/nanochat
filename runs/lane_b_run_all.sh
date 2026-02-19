@@ -24,7 +24,7 @@ fi
 
 "$SCRIPT_DIR/lane_b_step1_get_scaling_params.sh"
 "$SCRIPT_DIR/lane_b_step2_measure_stats.sh"
-"$SCRIPT_DIR/lane_b_step5_infer_ratio.sh"
+"$SCRIPT_DIR/lane_b_step3_infer_ratio.sh"
 
 LANE_B_ALLOW_UNREACHABLE="${LANE_B_ALLOW_UNREACHABLE:-0}"
 
@@ -48,12 +48,12 @@ if not allow_unreachable and d.get("feasibility_flag") != "feasible":
     raise SystemExit(f"likely_unreachable:{d.get('feasibility_flag')}")
 PY
 then
-  echo "Lane B inference is not promotable; stopping full pipeline after step 5."
+  echo "Lane B inference is not promotable; stopping full pipeline after step 3."
   echo "Recovery option:"
-  echo "  Adjust stats/calibration/threshold and rerun (step 2 or step 5)."
+  echo "  Adjust stats/calibration/threshold and rerun (step 2 or step 3)."
   exit 2
 fi
 
-"$SCRIPT_DIR/lane_b_step6_run_candidates.sh"
-"$SCRIPT_DIR/lane_b_step7_log_candidates.sh"
-"$SCRIPT_DIR/lane_b_step8_summary.sh"
+"$SCRIPT_DIR/lane_b_step4_run_candidates.sh"
+"$SCRIPT_DIR/lane_b_step5_log_candidates.sh"
+"$SCRIPT_DIR/lane_b_step6_summary.sh"

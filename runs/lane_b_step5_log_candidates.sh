@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lane_b_common.sh"
 lane_b_init
 
-echo "Step 7: appending candidate runs into Lane B schema ..."
+echo "Step 5: appending candidate runs into Lane B schema ..."
 
 if [ ! -f "$LANE_B_MANIFEST_CSV" ]; then
-  echo "Missing $LANE_B_MANIFEST_CSV. Run step 6 first."
+  echo "Missing $LANE_B_MANIFEST_CSV. Run step 4 first."
   exit 1
 fi
 if [ ! -f "$LANE_B_SCALING_TXT" ]; then
