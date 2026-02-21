@@ -1,0 +1,35 @@
+{
+  "export_prefix": "LANE_B_BASELINE",
+  "export_threshold_var": "LANE_B_TARGET_THRESHOLD",
+  "median_min_val_bpb": 0.925622,
+  "min_successful_runs": 3,
+  "recommended_target_threshold": 0.925622,
+  "required_seeds": [
+    "41",
+    "42",
+    "43"
+  ],
+  "results_csv": "/home/ubuntu/.cache/nanochat/lane_b_baseline/results/results.csv",
+  "successful_runs": [
+    {
+      "experiment_name": "baseline_d12_s41",
+      "min_val_bpb": 0.927682,
+      "seed": "41"
+    },
+    {
+      "experiment_name": "baseline_d12_s42",
+      "min_val_bpb": 0.925166,
+      "seed": "42"
+    },
+    {
+      "experiment_name": "baseline_d12_s43",
+      "min_val_bpb": 0.925622,
+      "seed": "43"
+    }
+  ],
+  "successful_runs_count": 3,
+  "target_metric_name": "val_bpb",
+  "threshold_formula": "median(min_val_bpb) + threshold_offset",
+  "threshold_offset": 0.0,
+  "timestamp_utc": "2026-02-20T17:22:13Z"
+}

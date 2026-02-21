@@ -1,0 +1,4 @@
+timestamp,git_commit,experiment_name,seed,depth,max_seq_len,device_batch_size,total_batch_size,target_param_data_ratio,warmdown_ratio,warmdown_shape,target_metric_name,target_metric_threshold,time_to_target_sec_measured,time_to_target_sec_extrapolated,extrapolation_method,tok_per_sec_median,dt_median_ms,wall_time_sec,final_train_loss,min_val_bpb,peak_mem_mib,status
+2026-02-20T06:53:50Z,df872bc,baseline_d12_s41,41,12,2048,4,-1,8.25,0.5,linear,val_bpb,-1,,,,57251.00,9157.69,13805,3.054473,0.927682,6361.96,ok
+2026-02-20T10:44:02Z,df872bc,baseline_d12_s42,42,12,2048,4,-1,8.25,0.5,linear,val_bpb,-1,,,,57236.00,9160.03,13812,3.044866,0.925166,6361.96,ok
+2026-02-20T14:34:24Z,df872bc,baseline_d12_s43,43,12,2048,4,-1,8.25,0.5,linear,val_bpb,-1,,,,57213.00,9163.70,13822,3.048170,0.925622,6361.96,ok

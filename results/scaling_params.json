@@ -2,7 +2,7 @@
   "aspect_ratio": 64,
   "depth": 12,
   "head_dim": 128,
-  "max_seq_len": 512,
+  "max_seq_len": 2048,
   "model_dim": 768,
   "n_head": 6,
   "n_kv_head": 6,
@@ -15,7 +15,7 @@
     "value_embeds": 150994944,
     "wte": 25165824
   },
-  "timestamp_utc": "2026-02-19T01:33:50Z",
+  "timestamp_utc": "2026-02-20T17:29:22Z",
   "vocab_size": 32768,
   "window_pattern": "L"
 }

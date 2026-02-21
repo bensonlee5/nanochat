@@ -1,0 +1,5 @@
+run_id,seed,mode,chosen_ratio,status,log_path
+laneb_inferred_s41,41,inferred,9.57660546151875,ok,/home/ubuntu/.cache/nanochat/lane_b_run/logs/laneb_inferred_s41.log
+laneb_confirmation_s41,41,confirmation,10.055435734594687,ok,/home/ubuntu/.cache/nanochat/lane_b_run/logs/laneb_confirmation_s41.log
+laneb_inferred_s42,42,inferred,9.57660546151875,ok,/home/ubuntu/.cache/nanochat/lane_b_run/logs/laneb_inferred_s42.log
+laneb_confirmation_s42,42,confirmation,10.055435734594687,ok,/home/ubuntu/.cache/nanochat/lane_b_run/logs/laneb_confirmation_s42.log
